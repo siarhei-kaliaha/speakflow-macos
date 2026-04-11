@@ -19,9 +19,6 @@ Active dictation state:
 
 ![SpeakFlow active widget](docs/images/widget-active.png)
 
-Larger widget detail:
-
-![SpeakFlow widget detail](docs/images/widget-detail.png)
 
 ## What this build does
 
