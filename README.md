@@ -9,6 +9,20 @@
 5. optional LLM cleanup pass for punctuation and readability
 6. Accessibility text insertion first, paste fallback second
 
+## Preview
+
+Idle widget:
+
+![SpeakFlow idle widget](docs/images/widget-idle.png)
+
+Active dictation state:
+
+![SpeakFlow active widget](docs/images/widget-active.png)
+
+Larger widget detail:
+
+![SpeakFlow widget detail](docs/images/widget-detail.png)
+
 ## What this build does
 
 Current flow:
