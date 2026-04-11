@@ -1,6 +1,6 @@
 # SpeakFlow (macOS)
 
-`SpeakFlow` is a local macOS menu bar dictation app inspired by Whisper Flow:
+`SpeakFlow` is a local macOS menu bar dictation app:
 
 1. global hotkey dictation from any app
 2. native microphone capture
@@ -54,7 +54,7 @@ Default config:
   "customVocabulary": [
     "OpenAI",
     "macOS",
-    "Whisper",
+    "Dictation",
     "ChatGPT"
   ],
   "elevenLabsRealtimeModel": "scribe_v2_realtime",
@@ -101,6 +101,6 @@ For the best English + Russian results:
 This first build does not yet include:
 
 1. live partial transcript display in the widget
-2. local on-device Whisper / MLX fallback
+2. local on-device speech-to-text fallback
 3. per-app formatting profiles or tone presets
 4. widget context menus or compact/expanded modes

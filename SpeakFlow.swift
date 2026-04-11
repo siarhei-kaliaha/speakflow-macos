@@ -192,7 +192,7 @@ Return plain text only with no commentary.
             customVocabulary: [
                 "OpenAI",
                 "macOS",
-                "Whisper",
+                "Dictation",
                 "ChatGPT"
             ],
             restoreClipboard: true,
