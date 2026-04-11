@@ -1,0 +1,22 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="160" y1="128" x2="864" y2="896" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1D1E23"/>
+      <stop offset="1" stop-color="#090A0D"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="304" y1="332" x2="720" y2="692" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.02"/>
+    </linearGradient>
+  </defs>
+  <rect x="88" y="88" width="848" height="848" rx="220" fill="url(#bg)"/>
+  <rect x="120" y="120" width="784" height="784" rx="188" stroke="white" stroke-opacity="0.09" stroke-width="10"/>
+  <rect x="250" y="372" width="524" height="280" rx="140" fill="#131419"/>
+  <rect x="250" y="372" width="524" height="280" rx="140" stroke="white" stroke-opacity="0.07" stroke-width="8"/>
+  <rect x="346" y="448" width="332" height="128" rx="64" fill="url(#glow)"/>
+  <rect x="346" y="496" width="108" height="24" rx="12" fill="white"/>
+  <rect x="478" y="470" width="28" height="76" rx="14" fill="white"/>
+  <rect x="530" y="442" width="28" height="132" rx="14" fill="white"/>
+  <rect x="582" y="470" width="28" height="76" rx="14" fill="white"/>
+  <rect x="634" y="496" width="44" height="24" rx="12" fill="white"/>
+</svg>
