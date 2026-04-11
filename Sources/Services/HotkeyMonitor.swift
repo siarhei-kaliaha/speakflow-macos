@@ -9,6 +9,7 @@ final class HotkeyMonitor {
         case requestRecordingStart(triggerLocation: NSPoint)
         case requestRecordingStop
         case requestRecordingCancel
+        case cancelHotkeyCapture
         case capturedBinding(HotkeyBinding)
     }
 
@@ -269,6 +270,7 @@ final class HotkeyMonitor {
     private func handleKeyDown(_ event: NSEvent, isCapturingHotkey: Bool) {
         if isCapturingHotkey {
             if event.keyCode == UInt16(kVK_Escape) {
+                onEvent?(.cancelHotkeyCapture)
                 return
             }
             if event.keyCode == UInt16(kVK_Space),
