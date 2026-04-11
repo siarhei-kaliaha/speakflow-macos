@@ -14,9 +14,11 @@ rm -rf "$APP_DIR"
 rm -rf "$ICONSET_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$ICONSET_DIR"
 
+APP_SOURCES=("${(@f)$(find "$ROOT_DIR/Sources" -name '*.swift' | sort)}")
+
 SWIFT_MODULECACHE_PATH=/tmp/swift-module-cache \
 CLANG_MODULE_CACHE_PATH=/tmp/clang-module-cache \
-swiftc "$ROOT_DIR/SpeakFlow.swift" -o "$MACOS_DIR/SpeakFlow"
+swiftc "${APP_SOURCES[@]}" -o "$MACOS_DIR/SpeakFlow"
 
 SWIFT_MODULECACHE_PATH=/tmp/swift-module-cache \
 CLANG_MODULE_CACHE_PATH=/tmp/clang-module-cache \

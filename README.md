@@ -35,6 +35,23 @@ chmod +x build-speakflow-app.sh
 open SpeakFlow.app
 ```
 
+## Architecture
+
+The app is organized as a small native macOS codebase instead of a single monolithic file:
+
+```text
+Sources/
+  App/          App lifecycle and orchestration
+  Audio/        Microphone capture
+  Core/         Shared constants, enums, and icon helpers
+  Models/       Config and domain models
+  Networking/   ElevenLabs + OpenAI clients
+  Storage/      History and stats persistence
+  UI/           Widget, menu, and control center window
+```
+
+`SpeakFlowApp` is the runtime coordinator. UI surfaces, persistence, transcription clients, and helpers live in dedicated source files so the app can keep growing without turning back into a single-file prototype.
+
 ## Config
 
 On first launch, SpeakFlow creates and opens:
