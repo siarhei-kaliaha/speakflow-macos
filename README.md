@@ -46,6 +46,24 @@ chmod +x build-speakflow-app.sh
 open SpeakFlow.app
 ```
 
+## Tests
+
+The repository now includes a Swift Package test harness for the core module.
+
+Run the suite:
+
+```bash
+swift test
+```
+
+Run the suite with coverage:
+
+```bash
+./scripts/test-coverage.sh
+```
+
+Current core source line coverage is about `94%` based on the `SpeakFlowCore` module measured through `llvm-cov`.
+
 ## Architecture
 
 The app is organized as a small native macOS codebase instead of a single monolithic file:

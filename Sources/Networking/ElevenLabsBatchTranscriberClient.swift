@@ -1,9 +1,21 @@
 import Foundation
 struct ElevenLabsBatchTranscriberClient {
     let config: AppConfig
+    let session: NetworkSession
+    let environment: [String: String]
+
+    init(
+        config: AppConfig,
+        session: NetworkSession = URLSession.shared,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
+        self.config = config
+        self.session = session
+        self.environment = environment
+    }
 
     func transcribe(audioData: Data, mimeType: String = "audio/wav", fileExtension: String = "wav") async throws -> String {
-        guard let apiKey = config.resolvedElevenLabsAPIKey() else {
+        guard let apiKey = config.resolvedElevenLabsAPIKey(environment: environment) else {
             throw SpeakFlowError.transcriptionFailed("Add `elevenLabsAPIKey` to the SpeakFlow config or set `ELEVENLABS_API_KEY`.")
         }
 
@@ -38,7 +50,7 @@ struct ElevenLabsBatchTranscriberClient {
         request.setValue("multipart/form-data; boundary=\(multipart.boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = multipart.finalized()
 
-        let (responseData, response) = try await URLSession.shared.data(for: request)
+        let (responseData, response) = try await session.data(for: request)
 
         guard let http = response as? HTTPURLResponse else {
             throw SpeakFlowError.transcriptionFailed("The ElevenLabs batch API did not return an HTTP response.")
@@ -57,4 +69,3 @@ struct ElevenLabsBatchTranscriberClient {
         return text
     }
 }
-

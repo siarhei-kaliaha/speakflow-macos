@@ -69,6 +69,18 @@ extension Data {
 
 struct OpenAICompatibleClient {
     let config: AppConfig
+    let session: NetworkSession
+    let environment: [String: String]
+
+    init(
+        config: AppConfig,
+        session: NetworkSession = URLSession.shared,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
+        self.config = config
+        self.session = session
+        self.environment = environment
+    }
 
     private func endpointURL(_ suffix: String) throws -> URL {
         let trimmed = config.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -79,7 +91,7 @@ struct OpenAICompatibleClient {
     }
 
     private func authorizedRequest(url: URL) throws -> URLRequest {
-        guard let apiKey = config.resolvedOpenAIAPIKey() else {
+        guard let apiKey = config.resolvedOpenAIAPIKey(environment: environment) else {
             throw SpeakFlowError.missingAPIKey
         }
 
@@ -108,7 +120,7 @@ struct OpenAICompatibleClient {
         request.setValue("multipart/form-data; boundary=\(multipart.boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = multipart.finalized()
 
-        let (responseData, response) = try await URLSession.shared.data(for: request)
+        let (responseData, response) = try await session.data(for: request)
         try validateHTTPResponse(response, data: responseData, failureCase: SpeakFlowError.transcriptionFailed)
 
         let text = String(decoding: responseData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -123,7 +135,7 @@ struct OpenAICompatibleClient {
             return text
         }
 
-        guard config.resolvedOpenAIAPIKey() != nil else {
+        guard config.resolvedOpenAIAPIKey(environment: environment) != nil else {
             return text
         }
 
@@ -141,7 +153,7 @@ struct OpenAICompatibleClient {
         )
         request.httpBody = try JSONEncoder().encode(payload)
 
-        let (responseData, response) = try await URLSession.shared.data(for: request)
+        let (responseData, response) = try await session.data(for: request)
         try validateHTTPResponse(response, data: responseData, failureCase: SpeakFlowError.cleanupFailed)
 
         let decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: responseData)
@@ -167,4 +179,3 @@ struct OpenAICompatibleClient {
         }
     }
 }
-

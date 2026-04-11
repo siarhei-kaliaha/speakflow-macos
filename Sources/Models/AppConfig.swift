@@ -135,13 +135,13 @@ Return plain text only with no commentary.
         HotkeyBinding(rawValue: hotkeyBinding) ?? .fn
     }
 
-    func resolvedOpenAIAPIKey() -> String? {
+    func resolvedOpenAIAPIKey(environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
         let inline = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !inline.isEmpty {
             return inline
         }
 
-        if let env = ProcessInfo.processInfo.environment["OPENAI_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if let env = environment["OPENAI_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !env.isEmpty {
             return env
         }
@@ -149,13 +149,13 @@ Return plain text only with no commentary.
         return nil
     }
 
-    func resolvedElevenLabsAPIKey() -> String? {
+    func resolvedElevenLabsAPIKey(environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
         let inline = elevenLabsAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !inline.isEmpty {
             return inline
         }
 
-        if let env = ProcessInfo.processInfo.environment["ELEVENLABS_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if let env = environment["ELEVENLABS_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !env.isEmpty {
             return env
         }
@@ -174,4 +174,3 @@ Return plain text only with no commentary.
             .joined(separator: "\n\n")
     }
 }
-
