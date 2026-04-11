@@ -124,6 +124,72 @@ For the best English + Russian results:
 4. keep the cleanup prompt conservative so it fixes text without changing meaning
 5. speak naturally; the prompt tells the models not to translate between English and Russian
 
+## Rough pricing
+
+These are rough estimates, not quotes. API and subscription prices change, and this app combines two different billing models:
+
+1. ElevenLabs charges from a monthly credit pool on paid plans, but their API pricing page also publishes business-tier starting rates for STT, which are useful as a rough benchmark.
+2. OpenAI cleanup is plain token billing, so that part is easier to estimate.
+
+### Baseline comparison
+
+1. `SpeakFlow` with ElevenLabs + OpenAI cleanup
+   If you stay inside ElevenLabs `Starter`, the practical floor is about `$5/month` plus a very small OpenAI cleanup bill.
+2. `SpeakFlow` with OpenAI transcription only
+   `gpt-4o-transcribe` is listed at about `$0.006 / minute`, so `600 minutes / month` is about `$3.60` before any cleanup.
+3. `Wispr Flow Pro`
+   Public pricing is ` $15/user/month ` on the monthly plan, or ` $12/user/month ` billed annually.
+
+### STT benchmark rates
+
+Using official published API pricing as a benchmark:
+
+1. ElevenLabs `Scribe v2` batch STT: about `$0.22 / hour`
+2. ElevenLabs `Scribe v2 Realtime`: about `$0.39 / hour`
+3. OpenAI `gpt-4o-transcribe`: about `$0.006 / minute` or about `$0.36 / hour`
+
+### Cleanup estimate
+
+For cleanup, the cost is usually small compared with speech recognition. As a rough rule of thumb:
+
+1. `gpt-5.4-mini` is `$0.75 / 1M input tokens` and `$4.50 / 1M output tokens`
+2. short dictation cleanup prompts usually land in the `pennies to low single-digit dollars per month` range unless usage is very heavy
+
+### Example monthly scenarios
+
+These are practical estimates, not exact bills:
+
+1. Light use: `300 minutes/month`
+   `OpenAI-only transcription` is about `$1.80`.
+   `ElevenLabs Scribe v2 batch` is about `$1.10`.
+   `ElevenLabs Scribe v2 Realtime` is about `$1.95`.
+2. Medium use: `600 minutes/month`
+   `OpenAI-only transcription` is about `$3.60`.
+   `ElevenLabs Scribe v2 batch` is about `$2.20`.
+   `ElevenLabs Scribe v2 Realtime` is about `$3.90`.
+3. Heavy use: `1,500 minutes/month`
+   `OpenAI-only transcription` is about `$9.00`.
+   `ElevenLabs Scribe v2 batch` is about `$5.50`.
+   `ElevenLabs Scribe v2 Realtime` is about `$9.75`.
+
+Add OpenAI cleanup on top of those numbers. In most dictation-heavy setups, cleanup is still likely to stay much smaller than the transcription cost unless prompts or outputs become unusually large.
+
+### What this means in practice
+
+1. If you already want ElevenLabs for quality and low latency, `SpeakFlow` can be cheaper than a polished subscription app, but your true cost depends on which ElevenLabs tier you need.
+2. If your main goal is the lowest raw operating cost, an OpenAI transcription-first setup can be very inexpensive.
+3. Paid SaaS products like Wispr Flow include the finished app, support, hosted infrastructure, and ongoing product work, so the comparison is not fully apples-to-apples.
+
+### Sources
+
+1. [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
+2. [OpenAI gpt-4o-transcribe model page](https://developers.openai.com/api/docs/models/gpt-4o-transcribe)
+3. [ElevenLabs pricing](https://elevenlabs.io/pricing)
+4. [ElevenLabs docs overview](https://elevenlabs.io/docs/product/introduction)
+5. [ElevenLabs speech-to-text overview](https://elevenlabs.io/docs/capabilities/speech-to-text)
+6. [Wispr Flow pricing](https://wisprflow.ai/pricing)
+7. [Wispr Flow plan details](https://docs.wisprflow.ai/articles/9559327591-flow-plans-and-what-s-included)
+
 ## Current limits
 
 This first build does not yet include:
