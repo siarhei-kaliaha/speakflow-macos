@@ -16,15 +16,16 @@ final class ControlCenterWindowController: NSWindowController {
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1040, height: 720),
+            contentRect: NSRect(x: 0, y: 0, width: 1140, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "SpeakFlow Workspace"
+        window.title = "SpeakFlow Control Center"
         window.isReleasedWhenClosed = false
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        window.minSize = NSSize(width: 1040, height: 680)
         super.init(window: window)
         setupUI()
     }
@@ -45,8 +46,7 @@ final class ControlCenterWindowController: NSWindowController {
 
     private func setupUI() {
         guard let contentView = window?.contentView else { return }
-        contentView.wantsLayer = true
-        contentView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        applyControlCenterBackground(to: contentView)
 
         controlsView.onBeginHotkeyCapture = { [weak self] in
             self?.onBeginHotkeyCapture?()
@@ -71,7 +71,7 @@ final class ControlCenterWindowController: NSWindowController {
         root.translatesAutoresizingMaskIntoConstraints = false
         root.orientation = .vertical
         root.alignment = .leading
-        root.spacing = 20
+        root.spacing = 22
 
         root.addArrangedSubview(headerView)
         root.addArrangedSubview(metricsView)
@@ -81,7 +81,7 @@ final class ControlCenterWindowController: NSWindowController {
         bodySplit.orientation = .horizontal
         bodySplit.alignment = .top
         bodySplit.distribution = .fill
-        bodySplit.spacing = 18
+        bodySplit.spacing = 20
         bodySplit.addArrangedSubview(controlsView)
         bodySplit.addArrangedSubview(historyView)
         root.addArrangedSubview(bodySplit)
@@ -89,10 +89,10 @@ final class ControlCenterWindowController: NSWindowController {
         contentView.addSubview(root)
 
         NSLayoutConstraint.activate([
-            root.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 26),
-            root.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -26),
-            root.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 26),
-            root.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -26),
+            root.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
+            root.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
+            root.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 28),
+            root.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -28),
 
             bodySplit.widthAnchor.constraint(equalTo: root.widthAnchor)
         ])

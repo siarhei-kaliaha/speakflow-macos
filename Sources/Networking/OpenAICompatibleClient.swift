@@ -101,21 +101,36 @@ struct OpenAICompatibleClient {
         return request
     }
 
-    func transcribe(audioFileURL: URL) async throws -> String {
+    func transcribe(audioFileURL: URL, modelOverride: String? = nil) async throws -> String {
+        let data = try Data(contentsOf: audioFileURL)
+        return try await transcribe(
+            audioData: data,
+            mimeType: "audio/m4a",
+            fileExtension: audioFileURL.pathExtension.isEmpty ? "m4a" : audioFileURL.pathExtension,
+            modelOverride: modelOverride
+        )
+    }
+
+    func transcribe(
+        audioData: Data,
+        mimeType: String,
+        fileExtension: String,
+        modelOverride: String? = nil
+    ) async throws -> String {
         let url = try endpointURL("/audio/transcriptions")
         var request = try authorizedRequest(url: url)
         request.httpMethod = "POST"
 
         var multipart = MultipartFormData()
-        multipart.addField(name: "model", value: config.transcriptionModel)
+        let model = resolvedTranscriptionModel(modelOverride)
+        multipart.addField(name: "model", value: model)
         multipart.addField(name: "prompt", value: config.resolvedTranscriptionPrompt())
         multipart.addField(name: "response_format", value: "text")
         let languageHint = config.transcriptionLanguageHint.trimmingCharacters(in: .whitespacesAndNewlines)
         if !languageHint.isEmpty {
             multipart.addField(name: "language", value: languageHint)
         }
-        let data = try Data(contentsOf: audioFileURL)
-        multipart.addFile(name: "file", filename: audioFileURL.lastPathComponent, mimeType: "audio/m4a", data: data)
+        multipart.addFile(name: "file", filename: "speakflow-transcription.\(fileExtension)", mimeType: mimeType, data: audioData)
 
         request.setValue("multipart/form-data; boundary=\(multipart.boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = multipart.finalized()
@@ -162,6 +177,14 @@ struct OpenAICompatibleClient {
             throw SpeakFlowError.cleanupFailed("The cleanup model returned an empty result.")
         }
         return cleaned
+    }
+
+    private func resolvedTranscriptionModel(_ override: String?) -> String {
+        let candidate = (override ?? config.transcriptionModel).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !candidate.isEmpty {
+            return candidate
+        }
+        return openAITranscriptionFallbackModel
     }
 
     private func validateHTTPResponse(

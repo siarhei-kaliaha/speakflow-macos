@@ -61,11 +61,33 @@ struct ElevenLabsBatchTranscriberClient {
             throw SpeakFlowError.transcriptionFailed("ElevenLabs batch HTTP \(http.statusCode): \(body)")
         }
 
-        let decoded = try JSONDecoder().decode(ElevenLabsTranscriptResponse.self, from: responseData)
-        let text = decoded.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = try decodeTranscriptText(from: responseData)
         if text.isEmpty {
             throw SpeakFlowError.transcriptionFailed("The ElevenLabs batch API returned an empty transcript.")
         }
         return text
+    }
+
+    private func decodeTranscriptText(from responseData: Data) throws -> String {
+        if let decoded = try? JSONDecoder().decode(ElevenLabsTranscriptResponse.self, from: responseData) {
+            return decoded.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if let object = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any] {
+            let candidates = [
+                object["text"] as? String,
+                object["transcript"] as? String,
+                object["message"] as? String
+            ]
+            if let text = candidates.compactMap({ $0?.trimmingCharacters(in: .whitespacesAndNewlines) }).first,
+               !text.isEmpty {
+                return text
+            }
+        }
+
+        let body = String(decoding: responseData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        throw SpeakFlowError.transcriptionFailed(
+            "The ElevenLabs batch API returned an unexpected response: \(body.isEmpty ? "<empty body>" : body)"
+        )
     }
 }

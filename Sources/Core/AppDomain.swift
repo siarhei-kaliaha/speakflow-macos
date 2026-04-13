@@ -44,6 +44,8 @@ let openAICleanupModelPresets = [
     "gpt-4o-mini"
 ]
 
+let openAITranscriptionFallbackModel = "gpt-4o-transcribe"
+
 enum SpeakFlowError: LocalizedError {
     case missingAPIKey
     case invalidBaseURL(String)

@@ -57,16 +57,18 @@ final class ControlCenterMetricsView: NSView {
 
     private func makeMetricCard(title: String, valueLabel: NSTextField) -> NSView {
         let card = controlCenterCardView()
+        card.layer?.cornerRadius = 16
         let stack = NSStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 6
+        stack.spacing = 8
 
         let titleLabel = NSTextField(labelWithString: title.uppercased())
         titleLabel.font = .systemFont(ofSize: 11, weight: .medium)
-        titleLabel.textColor = .secondaryLabelColor
-        valueLabel.font = .systemFont(ofSize: 24, weight: .semibold)
+        titleLabel.textColor = ControlCenterChrome.secondaryColor
+        valueLabel.font = .systemFont(ofSize: 25, weight: .bold)
+        valueLabel.textColor = ControlCenterChrome.titleColor
 
         stack.addArrangedSubview(titleLabel)
         stack.addArrangedSubview(valueLabel)

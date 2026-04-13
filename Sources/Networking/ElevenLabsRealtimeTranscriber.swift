@@ -16,6 +16,8 @@ final class ElevenLabsRealtimeTranscriber {
     private var inputFormat: AVAudioFormat?
     private var outputFormat: AVAudioFormat?
     private var previousText: String?
+    private var sessionStarted = false
+    private var pendingChunks: [Data] = []
 
     private var committedTranscript = ""
     private var partialTranscript = ""
@@ -41,12 +43,22 @@ final class ElevenLabsRealtimeTranscriber {
         let task = session.webSocketTask(with: request)
         webSocketTask = task
         self.previousText = previousText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        stateQueue.sync {
+            self.closed = false
+            self.pendingError = nil
+            self.sessionStarted = false
+            self.pendingChunks.removeAll(keepingCapacity: true)
+            self.capturedPCMData.removeAll(keepingCapacity: true)
+            self.committedTranscript = ""
+            self.partialTranscript = ""
+        }
         task.resume()
         receiveNextMessage()
         try startAudioEngine()
     }
 
     func finish() async throws -> String {
+        try await waitForSessionStartIfNeeded()
         try await Task.sleep(nanoseconds: 180_000_000)
         stopAudioEngine()
         try sendFinalizationFrame()
@@ -164,8 +176,12 @@ final class ElevenLabsRealtimeTranscriber {
         let data = Data(bytes: channelData[0], count: byteCount)
         stateQueue.async {
             self.capturedPCMData.append(data)
+            if self.sessionStarted {
+                self.sendAudioFrame(data: data, commit: false)
+            } else {
+                self.pendingChunks.append(data)
+            }
         }
-        sendAudioFrame(data: data, commit: false)
     }
 
     private func makeLiveLevels(from buffer: AVAudioPCMBuffer, bands: Int) -> [CGFloat] {
@@ -258,6 +274,9 @@ final class ElevenLabsRealtimeTranscriber {
             task.send(.string(text)) { error in
                 if let error {
                     self.stateQueue.async {
+                        if self.closed {
+                            return
+                        }
                         self.pendingError = SpeakFlowError.transcriptionFailed("ElevenLabs send failed: \(error.localizedDescription)")
                     }
                 }
@@ -309,6 +328,17 @@ final class ElevenLabsRealtimeTranscriber {
         }
 
         switch type {
+        case "session_started":
+            stateQueue.async {
+                self.sessionStarted = true
+                let buffered = self.pendingChunks
+                self.pendingChunks.removeAll(keepingCapacity: true)
+                self.sendQueue.async {
+                    for chunk in buffered {
+                        self.sendAudioFrame(data: chunk, commit: false)
+                    }
+                }
+            }
         case "partial_transcript":
             let partial = (dict["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !partial.isEmpty else { return }
@@ -426,9 +456,25 @@ final class ElevenLabsRealtimeTranscriber {
         outputFormat = nil
     }
 
+    private func waitForSessionStartIfNeeded() async throws {
+        let deadline = Date().addingTimeInterval(2.5)
+        while Date() < deadline {
+            let snapshot = stateQueue.sync { (sessionStarted, pendingError, closed) }
+            if let error = snapshot.1 {
+                throw error
+            }
+            if snapshot.0 || snapshot.2 {
+                return
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
     private func closeSocket() {
         stateQueue.async {
             self.closed = true
+            self.sessionStarted = false
+            self.pendingChunks.removeAll(keepingCapacity: true)
         }
         webSocketTask?.cancel(with: .goingAway, reason: nil)
         webSocketTask = nil

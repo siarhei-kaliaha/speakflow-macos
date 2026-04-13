@@ -11,6 +11,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     private var history: [HistoryEntry] = []
     private var stats = UsageStats.empty
     private var realtimeTranscriber: ElevenLabsRealtimeTranscriber?
+    private let recorderController = RecorderController()
     private var state: DictationState = .idle {
         didSet {
             Task { @MainActor in
@@ -143,6 +144,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         NotificationCenter.default.removeObserver(self)
         unregisterHotKey()
         realtimeTranscriber?.cancel()
+        recorderController.cancel()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -467,10 +469,15 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         lastRecordingDuration = recordingDuration
         state = .transcribing
         debugLog("Finishing recording from hold")
-        let transcriber = realtimeTranscriber
         Task {
+            let localAudioFileURL = await self.stopLocalRecordingIfNeeded()
+            transcriberCancelAndClear()
             do {
-                let transcript = try await transcriber?.finish() ?? ""
+                guard let localAudioFileURL else {
+                    throw SpeakFlowError.noRecordedFile
+                }
+
+                let transcript = try await self.transcribeRecording(at: localAudioFileURL)
                 let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmedTranscript.isEmpty {
                     await MainActor.run {
@@ -485,9 +492,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                     await applyTranscriptResult(trimmedTranscript)
                 }
             } catch {
-                if let recoveredTranscript = await self.recoverTranscriptFromFallback(using: transcriber, after: error) {
-                    await self.applyTranscriptResult(recoveredTranscript)
-                } else if self.shouldSilentlyIgnore(error: error) {
+                if self.shouldSilentlyIgnore(error: error) {
                     await MainActor.run {
                         self.realtimeTranscriber = nil
                         self.recordingStartedAt = nil
@@ -499,12 +504,17 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                 } else {
                     await MainActor.run {
                         self.realtimeTranscriber = nil
+                        self.recordingStartedAt = nil
+                        self.lastRecordingDuration = nil
                         self.textInsertionController.clearTransientState()
                         self.state = .idle
                         self.debugLog("Transcription finish failed: \(error.localizedDescription)")
-                        self.presentError(message: error.localizedDescription)
+                        self.presentError(message: self.userFacingTranscriptionFailureMessage(for: error))
                     }
                 }
+            }
+            if let localAudioFileURL {
+                try? FileManager.default.removeItem(at: localAudioFileURL)
             }
         }
     }
@@ -513,6 +523,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     private func cancelRecordingFromHold() {
         guard state == .recording else { return }
         realtimeTranscriber?.cancel()
+        recorderController.cancel()
         realtimeTranscriber = nil
         textInsertionController.clearTransientState()
         hotkeyMonitor.cancelCurrentHold()
@@ -520,6 +531,31 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         recordingStartedAt = nil
         lastRecordingDuration = nil
         debugLog("Recording cancelled from hold")
+    }
+
+    private func stopLocalRecordingIfNeeded() async -> URL? {
+        if recorderController.isRecording {
+            do {
+                let url = try await recorderController.stopAndAwaitResult()
+                await MainActor.run {
+                    self.debugLog("Local recording finalized at \(url.lastPathComponent)")
+                }
+                return url
+            } catch {
+                await MainActor.run {
+                    self.debugLog("Local recorder stop failed: \(error.localizedDescription)")
+                }
+                return nil
+            }
+        }
+
+        return recorderController.currentFileURL
+    }
+
+    @MainActor
+    private func transcriberCancelAndClear() {
+        realtimeTranscriber?.cancel()
+        realtimeTranscriber = nil
     }
 
     @MainActor
@@ -556,6 +592,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             config = try configStore.load()
             textInsertionController.captureTargetApplication()
             textInsertionController.prepareForRecording(preferAccessibilityInsertion: config.preferAccessibilityInsertion)
+            try recorderController.start()
             let transcriber = ElevenLabsRealtimeTranscriber(config: config)
             transcriber.onAudioLevelsChanged = { [weak self] levels in
                 Task { @MainActor in
@@ -563,13 +600,22 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                     self.widgetCoordinator.updateAudioLevels(levels)
                 }
             }
-            try transcriber.start(previousText: nil)
-            realtimeTranscriber = transcriber
+            do {
+                try transcriber.start(previousText: nil)
+                realtimeTranscriber = transcriber
+                debugLog("Live audio meter connected")
+            } catch {
+                realtimeTranscriber = nil
+                debugLog("Live audio meter unavailable; continuing with local recording only: \(error.localizedDescription)")
+            }
             recordingStartedAt = Date()
             lastRecordingDuration = nil
             state = .recording
             debugLog("Recording started successfully")
         } catch {
+            recorderController.cancel()
+            realtimeTranscriber?.cancel()
+            realtimeTranscriber = nil
             recordingStartedAt = nil
             lastRecordingDuration = nil
             state = .idle
@@ -578,11 +624,110 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func transcribeRecording(at audioFileURL: URL) async throws -> String {
+        config = try configStore.load()
+        let primary = primaryTranscriptionProvider()
+
+        do {
+            let transcript = try await transcribeRecording(at: audioFileURL, using: primary)
+            await MainActor.run {
+                self.debugLog("Primary transcription succeeded via \(primary)")
+            }
+            return transcript
+        } catch {
+            await MainActor.run {
+                self.debugLog("Primary transcription failed via \(primary): \(error.localizedDescription)")
+            }
+
+            guard let backup = backupTranscriptionProvider(excluding: primary) else {
+                throw error
+            }
+
+            do {
+                let transcript = try await transcribeRecording(at: audioFileURL, using: backup)
+                await MainActor.run {
+                    self.debugLog("Backup transcription succeeded via \(backup)")
+                }
+                return transcript
+            } catch {
+                await MainActor.run {
+                    self.debugLog("Backup transcription failed via \(backup): \(error.localizedDescription)")
+                }
+                throw error
+            }
+        }
+    }
+
+    private func transcribeRecording(at audioFileURL: URL, using provider: String) async throws -> String {
+        switch provider {
+        case "elevenlabs":
+            let data = try Data(contentsOf: audioFileURL)
+            let client = ElevenLabsBatchTranscriberClient(config: config)
+            return try await client.transcribe(
+                audioData: data,
+                mimeType: audioMimeType(for: audioFileURL),
+                fileExtension: audioFileURL.pathExtension.isEmpty ? "m4a" : audioFileURL.pathExtension
+            )
+        case "openai":
+            let client = OpenAICompatibleClient(config: config)
+            return try await client.transcribe(
+                audioFileURL: audioFileURL,
+                modelOverride: openAITranscriptionFallbackModel
+            )
+        default:
+            throw SpeakFlowError.transcriptionFailed("No transcription provider is configured.")
+        }
+    }
+
+    private func primaryTranscriptionProvider() -> String {
+        if config.resolvedOpenAIAPIKey() != nil {
+            return "openai"
+        }
+        if config.resolvedElevenLabsAPIKey() != nil {
+            return "elevenlabs"
+        }
+        return "none"
+    }
+
+    private func backupTranscriptionProvider(excluding primary: String) -> String? {
+        if primary != "elevenlabs", config.resolvedElevenLabsAPIKey() != nil {
+            return "elevenlabs"
+        }
+        if primary != "openai", config.resolvedOpenAIAPIKey() != nil {
+            return "openai"
+        }
+        return nil
+    }
+
+    private func audioMimeType(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "wav":
+            return "audio/wav"
+        case "m4a":
+            return "audio/x-m4a"
+        case "aiff", "aif":
+            return "audio/aiff"
+        case "mp3":
+            return "audio/mpeg"
+        default:
+            return "application/octet-stream"
+        }
+    }
+
     private func applyTranscriptResult(_ transcript: String) async {
         do {
             config = try configStore.load()
             let client = OpenAICompatibleClient(config: config)
-            let finalText = try await client.cleanup(text: transcript)
+            let finalText: String
+            do {
+                let cleaned = try await client.cleanup(text: transcript)
+                finalText = cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? transcript : cleaned
+            } catch {
+                await MainActor.run {
+                    self.debugLog("Cleanup failed; using raw transcript instead: \(error.localizedDescription)")
+                }
+                finalText = transcript
+            }
             await MainActor.run {
                 self.realtimeTranscriber = nil
                 self.recordingStartedAt = nil
@@ -609,34 +754,8 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                 self.lastRecordingDuration = nil
                 self.textInsertionController.clearTransientState()
                 self.state = .idle
-                self.presentError(message: error.localizedDescription)
+                self.presentError(message: self.userFacingTranscriptionFailureMessage(for: error))
             }
-        }
-    }
-
-    private func recoverTranscriptFromFallback(using transcriber: ElevenLabsRealtimeTranscriber?, after error: Error) async -> String? {
-        guard let transcriber,
-              let wavData = transcriber.fallbackWAVData(),
-              !wavData.isEmpty else {
-            return nil
-        }
-
-        await MainActor.run {
-            self.debugLog("Realtime transcription failed; attempting ElevenLabs batch fallback: \(error.localizedDescription)")
-        }
-
-        do {
-            let fallbackClient = ElevenLabsBatchTranscriberClient(config: config)
-            let transcript = try await fallbackClient.transcribe(audioData: wavData)
-            await MainActor.run {
-                self.debugLog("ElevenLabs batch fallback succeeded")
-            }
-            return transcript
-        } catch {
-            await MainActor.run {
-                self.debugLog("ElevenLabs batch fallback failed: \(error.localizedDescription)")
-            }
-            return nil
         }
     }
 
@@ -646,9 +765,31 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             "no transcript arrived",
             "returned an empty transcript",
             "empty transcript",
-            "transcript was empty"
+            "transcript was empty",
+            "session could not start"
         ]
         return silentMarkers.contains { message.contains($0) }
+    }
+
+    private func userFacingTranscriptionFailureMessage(for error: Error) -> String {
+        if shouldSilentlyIgnore(error: error) {
+            return error.localizedDescription
+        }
+
+        let message = error.localizedDescription.lowercased()
+        let transportMarkers = [
+            "elevenlabs send failed",
+            "bad response from the server",
+            "unexpected response",
+            "receive failed",
+            "couldn’t be read because it isn’t in the correct format"
+        ]
+
+        if transportMarkers.contains(where: { message.contains($0) }) {
+            return "Speech recognition temporarily failed. Please try again."
+        }
+
+        return error.localizedDescription
     }
 
     @MainActor

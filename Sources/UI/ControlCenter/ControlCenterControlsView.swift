@@ -62,6 +62,7 @@ final class ControlCenterControlsView: NSView, NSComboBoxDelegate, NSControlText
         controlStack.spacing = 20
 
         let controlTitle = controlCenterSectionTitle("Controls")
+        let controlCaption = controlCenterSectionCaption("Tune the trigger, model stack, and operating behavior without leaving the app.")
 
         let hotkeySection = NSStackView()
         hotkeySection.translatesAutoresizingMaskIntoConstraints = false
@@ -70,16 +71,16 @@ final class ControlCenterControlsView: NSView, NSComboBoxDelegate, NSControlText
         hotkeySection.spacing = 10
         let hotkeyCaption = NSTextField(labelWithString: "Current shortcut")
         hotkeyCaption.font = .systemFont(ofSize: 12, weight: .medium)
-        hotkeyCaption.textColor = .secondaryLabelColor
+        hotkeyCaption.textColor = ControlCenterChrome.secondaryColor
         hotkeyValueLabel.font = .monospacedSystemFont(ofSize: 18, weight: .semibold)
+        hotkeyValueLabel.textColor = ControlCenterChrome.titleColor
         hotkeyHintLabel.font = .systemFont(ofSize: 12)
-        hotkeyHintLabel.textColor = .secondaryLabelColor
-        captureButton.bezelStyle = .rounded
-        captureButton.controlSize = .large
+        hotkeyHintLabel.textColor = ControlCenterChrome.secondaryColor
         captureButton.target = self
         captureButton.action = #selector(beginHotkeyCapture)
+        controlCenterStyleButton(captureButton, style: .primary)
         let configButton = NSButton(title: "Open Config File", target: self, action: #selector(openConfigFile))
-        configButton.bezelStyle = .rounded
+        controlCenterStyleButton(configButton, style: .secondary)
         let actionButtons = NSStackView()
         actionButtons.translatesAutoresizingMaskIntoConstraints = false
         actionButtons.orientation = .horizontal
@@ -119,14 +120,11 @@ final class ControlCenterControlsView: NSView, NSComboBoxDelegate, NSControlText
         notesSection.alignment = .leading
         notesSection.spacing = 8
         let notesTitle = controlCenterSectionTitle("Operating Notes")
-        let notesBody = NSTextField(wrappingLabelWithString: "Short accidental taps are ignored automatically. Silent clips stay quiet. SpeakFlow keeps the widget focused on the screen where you triggered dictation.")
-        notesBody.font = .systemFont(ofSize: 12)
-        notesBody.textColor = .secondaryLabelColor
-        notesBody.maximumNumberOfLines = 0
+        let notesBody = controlCenterSectionCaption("Short accidental taps are ignored automatically. Silent clips stay quiet. SpeakFlow keeps the widget focused on the screen where you triggered dictation.")
         notesSection.addArrangedSubview(notesTitle)
         notesSection.addArrangedSubview(notesBody)
 
-        [controlTitle, hotkeySection, setupSection, modelsSection, notesSection].forEach { controlStack.addArrangedSubview($0) }
+        [controlTitle, controlCaption, hotkeySection, setupSection, modelsSection, notesSection].forEach { controlStack.addArrangedSubview($0) }
         card.addSubview(controlStack)
 
         NSLayoutConstraint.activate([
@@ -135,7 +133,7 @@ final class ControlCenterControlsView: NSView, NSComboBoxDelegate, NSControlText
             card.topAnchor.constraint(equalTo: topAnchor),
             card.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            card.widthAnchor.constraint(equalToConstant: 328),
+            card.widthAnchor.constraint(equalToConstant: 356),
             controlStack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 22),
             controlStack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -22),
             controlStack.topAnchor.constraint(equalTo: card.topAnchor, constant: 22),
@@ -153,9 +151,9 @@ final class ControlCenterControlsView: NSView, NSComboBoxDelegate, NSControlText
         comboBox.target = self
         comboBox.action = #selector(modelComboSelectionChanged(_:))
         comboBox.tag = role.rawValue
-        comboBox.font = .monospacedSystemFont(ofSize: 13, weight: .medium)
+        controlCenterStyleComboBox(comboBox)
         NSLayoutConstraint.activate([
-            comboBox.widthAnchor.constraint(equalToConstant: 170)
+            comboBox.widthAnchor.constraint(equalToConstant: 182)
         ])
     }
 

@@ -33,6 +33,22 @@ final class RecorderController: NSObject, AVAudioRecorderDelegate {
         recorder?.stop()
     }
 
+    func stopAndAwaitResult() async throws -> URL {
+        guard recorder != nil else {
+            throw SpeakFlowError.noRecordedFile
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let previous = onStop
+            onStop = { [weak self] result in
+                self?.onStop = previous
+                previous?(result)
+                continuation.resume(with: result)
+            }
+            self.stop()
+        }
+    }
+
     func cancel() {
         recorder?.stop()
         if let url = currentFileURL {
@@ -69,4 +85,3 @@ final class RecorderController: NSObject, AVAudioRecorderDelegate {
         onStop?(.failure(finalError))
     }
 }
-

@@ -32,12 +32,19 @@ final class ControlCenterHeaderView: NSView {
         headerStack.distribution = .fill
         headerStack.spacing = 22
 
-        let brandIcon = NSImageView(image: controlCenterBrandIcon(size: 64))
+        let brandIconCard = controlCenterCardView()
+        brandIconCard.layer?.cornerRadius = 18
+        let brandIcon = NSImageView(image: controlCenterBrandIcon(size: 60))
         brandIcon.translatesAutoresizingMaskIntoConstraints = false
-        brandIcon.imageScaling = .scaleAxesIndependently
+        brandIcon.imageScaling = .scaleProportionallyUpOrDown
+        brandIconCard.addSubview(brandIcon)
         NSLayoutConstraint.activate([
-            brandIcon.widthAnchor.constraint(equalToConstant: 64),
-            brandIcon.heightAnchor.constraint(equalToConstant: 64)
+            brandIconCard.widthAnchor.constraint(equalToConstant: 78),
+            brandIconCard.heightAnchor.constraint(equalToConstant: 78),
+            brandIcon.centerXAnchor.constraint(equalTo: brandIconCard.centerXAnchor),
+            brandIcon.centerYAnchor.constraint(equalTo: brandIconCard.centerYAnchor),
+            brandIcon.widthAnchor.constraint(equalToConstant: 60),
+            brandIcon.heightAnchor.constraint(equalToConstant: 60)
         ])
 
         let titleStack = NSStackView()
@@ -46,10 +53,15 @@ final class ControlCenterHeaderView: NSView {
         titleStack.alignment = .leading
         titleStack.spacing = 8
 
-        let titleLabel = NSTextField(labelWithString: "SpeakFlow Workspace")
-        titleLabel.font = .systemFont(ofSize: 28, weight: .semibold)
+        let eyebrowLabel = NSTextField(labelWithString: "VOICE CONTROL CENTER")
+        eyebrowLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        eyebrowLabel.textColor = ControlCenterChrome.secondaryAccentColor
+
+        let titleLabel = NSTextField(labelWithString: "SpeakFlow Control Center")
+        titleLabel.font = .systemFont(ofSize: 30, weight: .bold)
+        titleLabel.textColor = ControlCenterChrome.titleColor
         subtitleLabel.font = .systemFont(ofSize: 14)
-        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.textColor = ControlCenterChrome.secondaryColor
 
         let providerBadge = controlCenterBadge(title: "Provider", valueLabel: providerBadgeValueLabel)
         let hotkeyBadge = controlCenterBadge(title: "Global Key", valueLabel: hotkeyBadgeValueLabel)
@@ -60,11 +72,12 @@ final class ControlCenterHeaderView: NSView {
         badgeColumn.spacing = 12
         badgeColumn.addArrangedSubview(hotkeyBadge)
 
+        titleStack.addArrangedSubview(eyebrowLabel)
         titleStack.addArrangedSubview(titleLabel)
         titleStack.addArrangedSubview(subtitleLabel)
         titleStack.addArrangedSubview(providerBadge)
 
-        headerStack.addArrangedSubview(brandIcon)
+        headerStack.addArrangedSubview(brandIconCard)
         headerStack.addArrangedSubview(titleStack)
         headerStack.addArrangedSubview(NSView())
         headerStack.addArrangedSubview(badgeColumn)
@@ -82,6 +95,6 @@ final class ControlCenterHeaderView: NSView {
             headerStack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -22)
         ])
 
-        subtitleLabel.stringValue = "Voice keyboard for every macOS app, with reliable dictation history, calmer controls, and a cleaner daily workflow."
+        subtitleLabel.stringValue = "A polished desktop workspace for dictation, model tuning, hotkey control, and reusable history."
     }
 }
