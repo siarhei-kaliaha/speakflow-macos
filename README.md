@@ -19,6 +19,10 @@ Active dictation state:
 
 ![SpeakFlow active widget](docs/images/widget-active.png)
 
+Processing state:
+
+![SpeakFlow processing widget](docs/images/widget-processing.png)
+
 
 ## What this build does
 
