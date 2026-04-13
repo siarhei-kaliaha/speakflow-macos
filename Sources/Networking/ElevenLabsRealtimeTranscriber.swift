@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 final class ElevenLabsRealtimeTranscriber {
     var onTranscriptChanged: ((String) -> Void)?
+    var onAudioLevelsChanged: (([CGFloat]) -> Void)?
 
     private let config: AppConfig
     private let sampleRate = 16_000.0
@@ -119,6 +120,13 @@ final class ElevenLabsRealtimeTranscriber {
             return
         }
 
+        let liveLevels = makeLiveLevels(from: buffer, bands: 25)
+        if !liveLevels.isEmpty {
+            DispatchQueue.main.async {
+                self.onAudioLevelsChanged?(liveLevels)
+            }
+        }
+
         let ratio = outputFormat.sampleRate / inputFormat.sampleRate
         let capacity = max(1, Int(Double(buffer.frameLength) * ratio) + 32)
         guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: AVAudioFrameCount(capacity)) else {
@@ -158,6 +166,64 @@ final class ElevenLabsRealtimeTranscriber {
             self.capturedPCMData.append(data)
         }
         sendAudioFrame(data: data, commit: false)
+    }
+
+    private func makeLiveLevels(from buffer: AVAudioPCMBuffer, bands: Int) -> [CGFloat] {
+        guard bands > 0 else { return [] }
+        let samples = extractSamples(from: buffer)
+        guard !samples.isEmpty else { return Array(repeating: 0, count: bands) }
+
+        let segmentLength = max(1, samples.count / bands)
+        var levels: [CGFloat] = []
+        levels.reserveCapacity(bands)
+
+        for bandIndex in 0..<bands {
+            let start = bandIndex * segmentLength
+            let end = min(samples.count, bandIndex == bands - 1 ? samples.count : start + segmentLength)
+            guard start < end else {
+                levels.append(0)
+                continue
+            }
+
+            let slice = samples[start..<end]
+            var sumSquares: Float = 0
+            for sample in slice {
+                sumSquares += sample * sample
+            }
+            let rms = sqrt(sumSquares / Float(slice.count))
+            let boosted = min(1.0, pow(CGFloat(rms) * 6.8, 0.62))
+            levels.append(boosted)
+        }
+
+        return levels
+    }
+
+    private func extractSamples(from buffer: AVAudioPCMBuffer) -> [Float] {
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0 else { return [] }
+
+        switch buffer.format.commonFormat {
+        case .pcmFormatFloat32:
+            guard let channelData = buffer.floatChannelData else { return [] }
+            let source = channelData[0]
+            return Array(UnsafeBufferPointer(start: source, count: frameLength))
+        case .pcmFormatFloat64:
+            guard let channelData = buffer.floatChannelData else { return [] }
+            let source = channelData[0]
+            return Array(UnsafeBufferPointer(start: source, count: frameLength)).map { Float($0) }
+        case .pcmFormatInt16:
+            guard let channelData = buffer.int16ChannelData else { return [] }
+            let source = channelData[0]
+            let raw = Array(UnsafeBufferPointer(start: source, count: frameLength))
+            return raw.map { Float($0) / Float(Int16.max) }
+        case .pcmFormatInt32:
+            guard let channelData = buffer.int32ChannelData else { return [] }
+            let source = channelData[0]
+            let raw = Array(UnsafeBufferPointer(start: source, count: frameLength))
+            return raw.map { Float($0) / Float(Int32.max) }
+        default:
+            return []
+        }
     }
 
     private func sendAudioFrame(data: Data, commit: Bool) {
@@ -392,4 +458,3 @@ final class ElevenLabsRealtimeTranscriber {
         return data
     }
 }
-

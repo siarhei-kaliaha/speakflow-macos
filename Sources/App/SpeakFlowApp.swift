@@ -53,6 +53,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     private var lastOutputText = ""
     private var lastPasteStatus = "Ready in every app"
     private var recordingStartedAt: Date?
+    private var lastRecordingDuration: TimeInterval?
     private var controlCenterWindowController: ControlCenterWindowController?
     private var isCapturingHotkey = false
     private var pasteQueue: [String] = []
@@ -390,10 +391,15 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         switch state {
         case .idle:
             widgetState = .idle
+            widgetCoordinator.updateAudioLevels(Array(repeating: 0, count: 25))
+            widgetCoordinator.updateTimer(startDate: nil, frozenDuration: nil)
         case .recording:
             widgetState = .active
+            widgetCoordinator.updateTimer(startDate: recordingStartedAt, frozenDuration: nil)
         case .transcribing:
             widgetState = .processing
+            widgetCoordinator.updateAudioLevels(Array(repeating: 0, count: 25))
+            widgetCoordinator.updateTimer(startDate: nil, frozenDuration: lastRecordingDuration)
         }
         widgetCoordinator.update(state: widgetState)
     }
@@ -458,6 +464,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             cancelRecordingFromHold()
             return
         }
+        lastRecordingDuration = recordingDuration
         state = .transcribing
         debugLog("Finishing recording from hold")
         let transcriber = realtimeTranscriber
@@ -470,6 +477,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                         self.debugLog("Transcript was empty after finish; returning to idle without alert")
                         self.realtimeTranscriber = nil
                         self.recordingStartedAt = nil
+                        self.lastRecordingDuration = nil
                         self.textInsertionController.clearTransientState()
                         self.state = .idle
                     }
@@ -483,6 +491,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                     await MainActor.run {
                         self.realtimeTranscriber = nil
                         self.recordingStartedAt = nil
+                        self.lastRecordingDuration = nil
                         self.textInsertionController.clearTransientState()
                         self.state = .idle
                         self.debugLog("Ignoring non-fatal transcription error: \(error.localizedDescription)")
@@ -509,6 +518,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         hotkeyMonitor.cancelCurrentHold()
         state = .idle
         recordingStartedAt = nil
+        lastRecordingDuration = nil
         debugLog("Recording cancelled from hold")
     }
 
@@ -547,13 +557,21 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             textInsertionController.captureTargetApplication()
             textInsertionController.prepareForRecording(preferAccessibilityInsertion: config.preferAccessibilityInsertion)
             let transcriber = ElevenLabsRealtimeTranscriber(config: config)
+            transcriber.onAudioLevelsChanged = { [weak self] levels in
+                Task { @MainActor in
+                    guard let self, self.state == .recording else { return }
+                    self.widgetCoordinator.updateAudioLevels(levels)
+                }
+            }
             try transcriber.start(previousText: nil)
             realtimeTranscriber = transcriber
             recordingStartedAt = Date()
+            lastRecordingDuration = nil
             state = .recording
             debugLog("Recording started successfully")
         } catch {
             recordingStartedAt = nil
+            lastRecordingDuration = nil
             state = .idle
             debugLog("Recording failed to start: \(error.localizedDescription)")
             presentError(message: error.localizedDescription)
@@ -568,6 +586,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             await MainActor.run {
                 self.realtimeTranscriber = nil
                 self.recordingStartedAt = nil
+                self.lastRecordingDuration = nil
                 self.textInsertionController.clearTransientState()
                 self.lastOutputText = finalText
                 if let snapshot = try? self.historyStore.append(text: finalText, provider: self.config.providerName) {
@@ -587,6 +606,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             await MainActor.run {
                 self.realtimeTranscriber = nil
                 self.recordingStartedAt = nil
+                self.lastRecordingDuration = nil
                 self.textInsertionController.clearTransientState()
                 self.state = .idle
                 self.presentError(message: error.localizedDescription)

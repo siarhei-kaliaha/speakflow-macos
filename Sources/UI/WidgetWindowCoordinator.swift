@@ -53,6 +53,16 @@ final class WidgetWindowCoordinator {
     }
 
     @MainActor
+    func updateAudioLevels(_ levels: [CGFloat]) {
+        widgetViews.forEach { $0.updateAudioLevels(levels) }
+    }
+
+    @MainActor
+    func updateTimer(startDate: Date?, frozenDuration: TimeInterval?) {
+        widgetViews.forEach { $0.updateTimer(startDate: startDate, frozenDuration: frozenDuration) }
+    }
+
+    @MainActor
     func resetLayout(debugLog: (String) -> Void) {
         positionWindows(animated: true, debugLog: debugLog)
     }

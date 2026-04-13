@@ -4,7 +4,7 @@
 
 1. global hotkey dictation from any app
 2. native microphone capture
-3. floating dictation widget you can click or drag
+3. floating dictation widget with idle, listening, and processing states
 4. ElevenLabs realtime speech recognition with English + Russian support
 5. optional LLM cleanup pass for punctuation and readability
 6. Accessibility text insertion first, paste fallback second
@@ -31,7 +31,7 @@ Current flow:
 5. it optionally runs a cleanup LLM pass
 6. it inserts the final text into the focused app
 
-The floating widget stays visible across Spaces, updates live between idle / listening / processing states, and can be dragged to a different screen position.
+The floating widget stays visible across Spaces, updates live between idle / listening / processing states, and can be dragged to a different screen position. In listening mode, the waveform is driven by real microphone input from the active recording session, and the widget shows a live `mm:ss` timer for the current dictation. In processing mode, the widget keeps the final recorded duration visible while the transcript is being cleaned and inserted.
 
 The keyboard trigger is hold-to-talk on `Right Control`. Recording starts when you press it and stops when you release it. If you hold `Right Control` and use it together with another key, SpeakFlow cancels that recording so normal shortcuts are less likely to trigger dictation by accident.
 
@@ -212,7 +212,7 @@ Add OpenAI cleanup on top of those numbers. In most dictation-heavy setups, clea
 
 This first build does not yet include:
 
-1. live partial transcript display in the widget
+1. live partial transcript text display in the widget
 2. local on-device speech-to-text fallback
 3. per-app formatting profiles or tone presets
 4. widget context menus or compact/expanded modes

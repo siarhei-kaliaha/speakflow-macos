@@ -4,8 +4,8 @@ import ApplicationServices
 import Carbon
 import Foundation
 
-let widgetOuterSize = NSSize(width: 176, height: 38)
-let widgetCapsuleSize = NSSize(width: 154, height: 26)
+let widgetOuterSize = NSSize(width: 136, height: 40)
+let widgetCapsuleSize = NSSize(width: 128, height: 32)
 
 func makePulseImage(size: NSSize, color: NSColor, backgroundColor: NSColor? = nil, template: Bool = false) -> NSImage {
     let image = NSImage(size: size)
