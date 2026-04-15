@@ -10,6 +10,31 @@ enum DictationState {
     case transcribing
 }
 
+enum CaptureMode: String, Codable, CaseIterable {
+    case dictation
+    case recording
+
+    var displayName: String {
+        switch self {
+        case .dictation:
+            return "Dictation"
+        case .recording:
+            return "Recording"
+        }
+    }
+}
+
+enum CaptureKind: String, Codable, CaseIterable {
+    case dictationSnippet
+    case recordingSession
+}
+
+enum CaptureStatus: String, Codable {
+    case completed
+    case cancelled
+    case failed
+}
+
 enum HotkeyBinding: String, CaseIterable, Codable {
     case fn = "fn"
     case ctrlOptionSpace = "ctrl_option_space"

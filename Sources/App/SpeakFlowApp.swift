@@ -6,9 +6,9 @@ import Foundation
 
 final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     private let configStore = ConfigStore()
-    private lazy var historyStore = HistoryStore(baseDirectory: configStore.supportDirectoryURL)
+    private lazy var captureStore = CaptureStore(baseDirectory: configStore.supportDirectoryURL)
     private var config = AppConfig.default()
-    private var history: [HistoryEntry] = []
+    private var captures: [CaptureRecord] = []
     private var stats = UsageStats.empty
     private var realtimeTranscriber: ElevenLabsRealtimeTranscriber?
     private let recorderController = RecorderController()
@@ -45,9 +45,14 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             }
         )
     )
-    private lazy var widgetCoordinator = WidgetWindowCoordinator { [weak self] in
-        Task { @MainActor in self?.toggleRecording() }
-    }
+    private lazy var widgetCoordinator = WidgetWindowCoordinator(
+        onPrimaryClick: { [weak self] in
+            Task { @MainActor in self?.handleWidgetPrimaryAction() }
+        },
+        onStopClick: { [weak self] in
+            Task { @MainActor in self?.finishRecordingFromHold() }
+        }
+    )
     @MainActor private lazy var hotkeyMonitor = makeHotkeyMonitor()
     @MainActor private lazy var textInsertionController = TextInsertionController(debugLog: debugLog)
 
@@ -55,10 +60,13 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     private var lastPasteStatus = "Ready in every app"
     private var recordingStartedAt: Date?
     private var lastRecordingDuration: TimeInterval?
+    private var activeCaptureMode: CaptureMode?
+    private var pendingCaptureMode: CaptureMode?
     private var controlCenterWindowController: ControlCenterWindowController?
     private var isCapturingHotkey = false
     private var pasteQueue: [String] = []
     private var isPasteInFlight = false
+    private var summarizingCaptureID: UUID?
 
     // MARK: - Diagnostics
 
@@ -122,15 +130,16 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         do {
             let created = try configStore.ensureConfigExists()
             config = try configStore.load()
-            history = historyStore.loadHistory()
-            stats = historyStore.loadStats()
+            captures = captureStore.loadCaptures()
+            stats = captureStore.loadStats()
+            let forceOpenControlCenter = ProcessInfo.processInfo.environment["SPEAKFLOW_OPEN_CONTROL_CENTER"] == "1"
             requestPlatformPermissionsIfNeeded()
             _ = statusMenuController
             widgetCoordinator.rebuild(debugLog: debugLog)
             registerHotKey()
             refreshUI()
 
-            if created || config.resolvedElevenLabsAPIKey() == nil {
+            if created || config.resolvedElevenLabsAPIKey() == nil || forceOpenControlCenter {
                 openControlCenter()
             }
         } catch {
@@ -186,7 +195,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                 self?.openConfig()
             }
             controller.onClearHistory = { [weak self] in
-                self?.clearHistory()
+                self?.clearCaptures()
             }
             controller.onUpdateRealtimeModel = { [weak self] model in
                 self?.updateRealtimeModel(model)
@@ -197,12 +206,22 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             controller.onUpdateCleanupModel = { [weak self] model in
                 self?.updateCleanupModel(model)
             }
+            controller.onSummarizeCapture = { [weak self] captureID in
+                self?.summarizeCapture(withID: captureID)
+            }
             controlCenterWindowController = controller
         }
 
-        controlCenterWindowController?.update(config: config, history: history, stats: stats, isCapturingHotkey: isCapturingHotkey)
+        controlCenterWindowController?.update(
+            config: config,
+            captures: captures,
+            stats: stats,
+            isCapturingHotkey: isCapturingHotkey,
+            activeCaptureMode: activeCaptureMode,
+            summarizingCaptureID: summarizingCaptureID
+        )
         controlCenterWindowController?.showWindow(nil)
-        controlCenterWindowController?.window?.makeKeyAndOrderFront(nil)
+        controlCenterWindowController?.presentAsPrimaryWorkspaceWindow()
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -232,7 +251,14 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             try configStore.save(config)
             registerHotKey()
             refreshUI()
-            controlCenterWindowController?.update(config: config, history: history, stats: stats, isCapturingHotkey: isCapturingHotkey)
+            controlCenterWindowController?.update(
+                config: config,
+                captures: captures,
+                stats: stats,
+                isCapturingHotkey: isCapturingHotkey,
+                activeCaptureMode: activeCaptureMode,
+                summarizingCaptureID: summarizingCaptureID
+            )
         } catch {
             presentError(message: "Could not save the hotkey setting.\n\(error.localizedDescription)")
         }
@@ -267,7 +293,14 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         do {
             try configStore.save(config)
             refreshUI()
-            controlCenterWindowController?.update(config: config, history: history, stats: stats, isCapturingHotkey: isCapturingHotkey)
+            controlCenterWindowController?.update(
+                config: config,
+                captures: captures,
+                stats: stats,
+                isCapturingHotkey: isCapturingHotkey,
+                activeCaptureMode: activeCaptureMode,
+                summarizingCaptureID: summarizingCaptureID
+            )
             if let successMessage {
                 debugLog(successMessage)
             }
@@ -277,13 +310,75 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    private func clearHistory() {
+    private func clearCaptures() {
         do {
-            try historyStore.clearHistory()
-            history = []
-            controlCenterWindowController?.update(config: config, history: history, stats: stats, isCapturingHotkey: isCapturingHotkey)
+            try captureStore.clearCaptures()
+            captures = []
+            stats = .empty
+            controlCenterWindowController?.update(
+                config: config,
+                captures: captures,
+                stats: stats,
+                isCapturingHotkey: isCapturingHotkey,
+                activeCaptureMode: activeCaptureMode,
+                summarizingCaptureID: summarizingCaptureID
+            )
         } catch {
-            presentError(message: "Could not clear history.\n\(error.localizedDescription)")
+            presentError(message: "Could not clear the library.\n\(error.localizedDescription)")
+        }
+    }
+
+    @MainActor
+    private func summarizeCapture(withID captureID: UUID) {
+        guard summarizingCaptureID == nil,
+              let capture = captures.first(where: { $0.id == captureID && $0.kind == .recordingSession }) else {
+            return
+        }
+
+        summarizingCaptureID = captureID
+        controlCenterWindowController?.update(
+            config: config,
+            captures: captures,
+            stats: stats,
+            isCapturingHotkey: isCapturingHotkey,
+            activeCaptureMode: activeCaptureMode,
+            summarizingCaptureID: summarizingCaptureID
+        )
+
+        Task {
+            do {
+                config = try configStore.load()
+                let client = OpenAICompatibleClient(config: config)
+                let summary = try await client.summarize(text: capture.finalText)
+                await MainActor.run {
+                    if let snapshot = try? self.captureStore.updateSummary(for: captureID, summary: summary) {
+                        self.captures = snapshot.0
+                        self.stats = snapshot.1
+                    }
+                    self.summarizingCaptureID = nil
+                    self.controlCenterWindowController?.update(
+                        config: self.config,
+                        captures: self.captures,
+                        stats: self.stats,
+                        isCapturingHotkey: self.isCapturingHotkey,
+                        activeCaptureMode: self.activeCaptureMode,
+                        summarizingCaptureID: self.summarizingCaptureID
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    self.summarizingCaptureID = nil
+                    self.controlCenterWindowController?.update(
+                        config: self.config,
+                        captures: self.captures,
+                        stats: self.stats,
+                        isCapturingHotkey: self.isCapturingHotkey,
+                        activeCaptureMode: self.activeCaptureMode,
+                        summarizingCaptureID: self.summarizingCaptureID
+                    )
+                    self.presentError(message: "Could not summarize this recording.\n\(error.localizedDescription)")
+                }
+            }
         }
     }
 
@@ -345,7 +440,14 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     private func beginHotkeyCapture() {
         isCapturingHotkey = true
         registerHotKey()
-        controlCenterWindowController?.update(config: config, history: history, stats: stats, isCapturingHotkey: true)
+        controlCenterWindowController?.update(
+            config: config,
+            captures: captures,
+            stats: stats,
+            isCapturingHotkey: true,
+            activeCaptureMode: activeCaptureMode,
+            summarizingCaptureID: summarizingCaptureID
+        )
     }
 
     @MainActor
@@ -359,7 +461,14 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         guard isCapturingHotkey else { return }
         isCapturingHotkey = false
         registerHotKey()
-        controlCenterWindowController?.update(config: config, history: history, stats: stats, isCapturingHotkey: false)
+        controlCenterWindowController?.update(
+            config: config,
+            captures: captures,
+            stats: stats,
+            isCapturingHotkey: false,
+            activeCaptureMode: activeCaptureMode,
+            summarizingCaptureID: summarizingCaptureID
+        )
     }
 
     @MainActor
@@ -396,10 +505,10 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             widgetCoordinator.updateAudioLevels(Array(repeating: 0, count: 25))
             widgetCoordinator.updateTimer(startDate: nil, frozenDuration: nil)
         case .recording:
-            widgetState = .active
+            widgetState = activeCaptureMode == .recording ? .recordingActive : .dictationActive
             widgetCoordinator.updateTimer(startDate: recordingStartedAt, frozenDuration: nil)
         case .transcribing:
-            widgetState = .processing
+            widgetState = activeCaptureMode == .recording ? .processingRecording : .processingDictation
             widgetCoordinator.updateAudioLevels(Array(repeating: 0, count: 25))
             widgetCoordinator.updateTimer(startDate: nil, frozenDuration: lastRecordingDuration)
         }
@@ -416,7 +525,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         case .requestRecordingStart(let triggerLocation):
             textInsertionController.updateTriggerLocation(triggerLocation)
             if state == .idle {
-                requestRecordingStart()
+                requestRecordingStart(mode: .dictation)
             }
         case .requestRecordingStop:
             if state == .recording {
@@ -449,7 +558,19 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     private func toggleRecording() {
         switch state {
         case .idle:
-            requestRecordingStart()
+            requestRecordingStart(mode: .dictation)
+        case .recording:
+            finishRecordingFromHold()
+        case .transcribing:
+            break
+        }
+    }
+
+    @MainActor
+    private func handleWidgetPrimaryAction() {
+        switch state {
+        case .idle:
+            requestRecordingStart(mode: .recording)
         case .recording:
             finishRecordingFromHold()
         case .transcribing:
@@ -470,6 +591,8 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         state = .transcribing
         debugLog("Finishing recording from hold")
         Task {
+            let captureMode = await MainActor.run { self.activeCaptureMode ?? .dictation }
+            let captureStartedAt = await MainActor.run { self.recordingStartedAt ?? Date() }
             let localAudioFileURL = await self.stopLocalRecordingIfNeeded()
             transcriberCancelAndClear()
             do {
@@ -486,10 +609,24 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                         self.recordingStartedAt = nil
                         self.lastRecordingDuration = nil
                         self.textInsertionController.clearTransientState()
+                        self.activeCaptureMode = nil
                         self.state = .idle
                     }
                 } else {
-                    await applyTranscriptResult(trimmedTranscript)
+                    switch captureMode {
+                    case .dictation:
+                        await applyDictationResult(
+                            rawTranscript: trimmedTranscript,
+                            startedAt: captureStartedAt,
+                            duration: recordingDuration
+                        )
+                    case .recording:
+                        await applyRecordingResult(
+                            transcript: trimmedTranscript,
+                            startedAt: captureStartedAt,
+                            duration: recordingDuration
+                        )
+                    }
                 }
             } catch {
                 if self.shouldSilentlyIgnore(error: error) {
@@ -498,6 +635,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                         self.recordingStartedAt = nil
                         self.lastRecordingDuration = nil
                         self.textInsertionController.clearTransientState()
+                        self.activeCaptureMode = nil
                         self.state = .idle
                         self.debugLog("Ignoring non-fatal transcription error: \(error.localizedDescription)")
                     }
@@ -507,6 +645,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                         self.recordingStartedAt = nil
                         self.lastRecordingDuration = nil
                         self.textInsertionController.clearTransientState()
+                        self.activeCaptureMode = nil
                         self.state = .idle
                         self.debugLog("Transcription finish failed: \(error.localizedDescription)")
                         self.presentError(message: self.userFacingTranscriptionFailureMessage(for: error))
@@ -528,6 +667,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         textInsertionController.clearTransientState()
         hotkeyMonitor.cancelCurrentHold()
         state = .idle
+        activeCaptureMode = nil
         recordingStartedAt = nil
         lastRecordingDuration = nil
         debugLog("Recording cancelled from hold")
@@ -559,11 +699,12 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    private func requestRecordingStart() {
+    private func requestRecordingStart(mode: CaptureMode) {
+        pendingCaptureMode = mode
         debugLog("Requesting recording start; microphoneAuth=\(AVCaptureDevice.authorizationStatus(for: .audio).rawValue)")
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
-            startRecording()
+            startRecording(mode: mode)
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { granted in
                 DispatchQueue.main.async {
@@ -580,18 +721,24 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     @MainActor
     private func handleMicrophonePermissionResult(_ granted: Bool) {
         if granted {
-            startRecording()
+            startRecording(mode: pendingCaptureMode ?? .dictation)
         } else {
             presentError(message: "Microphone access was denied. Enable it in System Settings > Privacy & Security > Microphone.")
         }
+        pendingCaptureMode = nil
     }
 
     @MainActor
-    private func startRecording() {
+    private func startRecording(mode: CaptureMode) {
         do {
             config = try configStore.load()
-            textInsertionController.captureTargetApplication()
-            textInsertionController.prepareForRecording(preferAccessibilityInsertion: config.preferAccessibilityInsertion)
+            activeCaptureMode = mode
+            if mode == .dictation {
+                textInsertionController.captureTargetApplication()
+                textInsertionController.prepareForRecording(preferAccessibilityInsertion: config.preferAccessibilityInsertion)
+            } else {
+                textInsertionController.clearTransientState()
+            }
             try recorderController.start()
             let transcriber = ElevenLabsRealtimeTranscriber(config: config)
             transcriber.onAudioLevelsChanged = { [weak self] levels in
@@ -611,11 +758,12 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             recordingStartedAt = Date()
             lastRecordingDuration = nil
             state = .recording
-            debugLog("Recording started successfully")
+            debugLog("\(mode.displayName) capture started successfully")
         } catch {
             recorderController.cancel()
             realtimeTranscriber?.cancel()
             realtimeTranscriber = nil
+            activeCaptureMode = nil
             recordingStartedAt = nil
             lastRecordingDuration = nil
             state = .idle
@@ -699,6 +847,17 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         return nil
     }
 
+    private func activeTranscriptionModelName() -> String {
+        switch primaryTranscriptionProvider() {
+        case "openai":
+            return openAITranscriptionFallbackModel
+        case "elevenlabs":
+            return config.transcriptionModel
+        default:
+            return ""
+        }
+    }
+
     private func audioMimeType(for url: URL) -> String {
         switch url.pathExtension.lowercased() {
         case "wav":
@@ -714,36 +873,49 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func applyTranscriptResult(_ transcript: String) async {
+    private func applyDictationResult(rawTranscript: String, startedAt: Date, duration: TimeInterval) async {
         do {
             config = try configStore.load()
             let client = OpenAICompatibleClient(config: config)
             let finalText: String
             do {
-                let cleaned = try await client.cleanup(text: transcript)
-                finalText = cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? transcript : cleaned
+                let cleaned = try await client.cleanup(text: rawTranscript)
+                finalText = cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? rawTranscript : cleaned
             } catch {
                 await MainActor.run {
                     self.debugLog("Cleanup failed; using raw transcript instead: \(error.localizedDescription)")
                 }
-                finalText = transcript
+                finalText = rawTranscript
             }
             await MainActor.run {
                 self.realtimeTranscriber = nil
                 self.recordingStartedAt = nil
                 self.lastRecordingDuration = nil
+                self.activeCaptureMode = nil
                 self.textInsertionController.clearTransientState()
                 self.lastOutputText = finalText
-                if let snapshot = try? self.historyStore.append(text: finalText, provider: self.config.providerName) {
-                    self.history = snapshot.0
+                if let snapshot = try? self.captureStore.append(
+                    kind: .dictationSnippet,
+                    startedAt: startedAt,
+                    endedAt: Date(),
+                    durationSeconds: duration,
+                    provider: self.config.providerName,
+                    transcriptionModel: self.activeTranscriptionModelName(),
+                    cleanupModel: self.config.cleanupEnabled ? self.config.cleanupModel : nil,
+                    rawTranscript: rawTranscript,
+                    finalText: finalText
+                ) {
+                    self.captures = snapshot.0
                     self.stats = snapshot.1
                 }
                 self.enqueuePaste(finalText)
                 self.controlCenterWindowController?.update(
                     config: self.config,
-                    history: self.history,
+                    captures: self.captures,
                     stats: self.stats,
-                    isCapturingHotkey: self.isCapturingHotkey
+                    isCapturingHotkey: self.isCapturingHotkey,
+                    activeCaptureMode: self.activeCaptureMode,
+                    summarizingCaptureID: self.summarizingCaptureID
                 )
                 self.state = .idle
             }
@@ -752,6 +924,54 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                 self.realtimeTranscriber = nil
                 self.recordingStartedAt = nil
                 self.lastRecordingDuration = nil
+                self.activeCaptureMode = nil
+                self.textInsertionController.clearTransientState()
+                self.state = .idle
+                self.presentError(message: self.userFacingTranscriptionFailureMessage(for: error))
+            }
+        }
+    }
+
+    private func applyRecordingResult(transcript: String, startedAt: Date, duration: TimeInterval) async {
+        do {
+            config = try configStore.load()
+            await MainActor.run {
+                self.realtimeTranscriber = nil
+                self.recordingStartedAt = nil
+                self.lastRecordingDuration = nil
+                self.activeCaptureMode = nil
+                self.textInsertionController.clearTransientState()
+                if let snapshot = try? self.captureStore.append(
+                    kind: .recordingSession,
+                    startedAt: startedAt,
+                    endedAt: Date(),
+                    durationSeconds: duration,
+                    provider: self.config.providerName,
+                    transcriptionModel: self.activeTranscriptionModelName(),
+                    cleanupModel: self.config.cleanupEnabled ? self.config.cleanupModel : nil,
+                    rawTranscript: transcript,
+                    finalText: transcript
+                ) {
+                    self.captures = snapshot.0
+                    self.stats = snapshot.1
+                }
+                self.controlCenterWindowController?.update(
+                    config: self.config,
+                    captures: self.captures,
+                    stats: self.stats,
+                    isCapturingHotkey: self.isCapturingHotkey,
+                    activeCaptureMode: self.activeCaptureMode,
+                    summarizingCaptureID: self.summarizingCaptureID
+                )
+                self.openControlCenter()
+                self.state = .idle
+            }
+        } catch {
+            await MainActor.run {
+                self.realtimeTranscriber = nil
+                self.recordingStartedAt = nil
+                self.lastRecordingDuration = nil
+                self.activeCaptureMode = nil
                 self.textInsertionController.clearTransientState()
                 self.state = .idle
                 self.presentError(message: self.userFacingTranscriptionFailureMessage(for: error))

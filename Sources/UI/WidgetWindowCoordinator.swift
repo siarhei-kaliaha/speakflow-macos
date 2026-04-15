@@ -2,12 +2,14 @@ import AppKit
 import Foundation
 
 final class WidgetWindowCoordinator {
-    private let onToggle: () -> Void
+    private let onPrimaryClick: () -> Void
+    private let onStopClick: () -> Void
     private var widgetWindows: [WidgetPanel] = []
     private var widgetViews: [WidgetContentView] = []
 
-    init(onToggle: @escaping () -> Void) {
-        self.onToggle = onToggle
+    init(onPrimaryClick: @escaping () -> Void, onStopClick: @escaping () -> Void) {
+        self.onPrimaryClick = onPrimaryClick
+        self.onStopClick = onStopClick
     }
 
     @MainActor
@@ -25,7 +27,8 @@ final class WidgetWindowCoordinator {
                 defer: false
             )
             let view = WidgetContentView(frame: NSRect(origin: .zero, size: frame.size))
-            view.onToggle = onToggle
+            view.onToggle = onPrimaryClick
+            view.onStopRecording = onStopClick
             window.isReleasedWhenClosed = false
             window.isFloatingPanel = true
             window.level = .statusBar

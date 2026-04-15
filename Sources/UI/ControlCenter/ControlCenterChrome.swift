@@ -4,76 +4,59 @@ import Foundation
 enum ControlCenterButtonStyle {
     case primary
     case secondary
-    case subtle
+    case ghost
 }
 
 enum ControlCenterChrome {
-    static let windowBackgroundTop = NSColor(calibratedRed: 0.11, green: 0.11, blue: 0.14, alpha: 1)
-    static let windowBackgroundBottom = NSColor(calibratedRed: 0.06, green: 0.06, blue: 0.08, alpha: 1)
-    static let cardBackground = NSColor(calibratedRed: 0.12, green: 0.12, blue: 0.16, alpha: 0.92)
-    static let cardOverlay = NSColor.white.withAlphaComponent(0.025)
-    static let cardBorder = NSColor.white.withAlphaComponent(0.10)
-    static let cardShadow = NSColor.black.withAlphaComponent(0.32)
-    static let titleColor = NSColor.white.withAlphaComponent(0.96)
-    static let bodyColor = NSColor.white.withAlphaComponent(0.82)
-    static let secondaryColor = NSColor.white.withAlphaComponent(0.56)
-    static let accentColor = NSColor(calibratedRed: 0.00, green: 0.90, blue: 1.0, alpha: 1)
-    static let secondaryAccentColor = NSColor(calibratedRed: 1.0, green: 0.165, blue: 0.373, alpha: 1.0)
+    static let windowBackground = NSColor(calibratedRed: 0.035, green: 0.035, blue: 0.043, alpha: 1)
+    static let sidebarBackground = NSColor(calibratedRed: 0.067, green: 0.067, blue: 0.075, alpha: 1)
+    static let surfaceBackground = NSColor(calibratedRed: 0.094, green: 0.094, blue: 0.106, alpha: 1)
+    static let surfaceHoverBackground = NSColor(calibratedRed: 0.153, green: 0.153, blue: 0.165, alpha: 1)
+    static let borderLight = NSColor(calibratedRed: 0.153, green: 0.153, blue: 0.165, alpha: 1)
+    static let borderStrong = NSColor(calibratedRed: 0.247, green: 0.247, blue: 0.290, alpha: 1)
+
+    static let titleColor = NSColor(calibratedRed: 0.957, green: 0.957, blue: 0.961, alpha: 1)
+    static let bodyColor = NSColor(calibratedRed: 0.631, green: 0.631, blue: 0.667, alpha: 1)
+    static let secondaryColor = NSColor(calibratedRed: 0.443, green: 0.443, blue: 0.478, alpha: 1)
+    static let inverseColor = NSColor.black
+
+    static let accentColor = NSColor(calibratedRed: 0.078, green: 0.722, blue: 0.651, alpha: 1)
+    static let accentHoverColor = NSColor(calibratedRed: 0.176, green: 0.831, blue: 0.749, alpha: 1)
+    static let accentBackground = NSColor(calibratedRed: 0.078, green: 0.722, blue: 0.651, alpha: 0.15)
+
+    static let sidebarWidth: CGFloat = 260
+    static let contentMaxWidth: CGFloat = 960
+    static let pagePaddingX: CGFloat = 48
+    static let pageTopPadding: CGFloat = 32
+    static let pageBottomPadding: CGFloat = 56
+    static let sectionGap: CGFloat = 40
+    static let idealWindowWidth: CGFloat = 1280
+    static let idealWindowHeight: CGFloat = 820
+    static let minimumComfortableWindowWidth: CGFloat = sidebarWidth + contentMaxWidth + (pagePaddingX * 2)
+    static let minimumComfortableWindowHeight: CGFloat = 760
 }
 
 func applyControlCenterBackground(to view: NSView) {
     view.wantsLayer = true
-    view.layer?.backgroundColor = ControlCenterChrome.windowBackgroundBottom.cgColor
-
-    let gradientName = "ControlCenterWindowGradient"
-    view.layer?.sublayers?.removeAll(where: { $0.name == gradientName })
-
-    let gradient = CAGradientLayer()
-    gradient.name = gradientName
-    gradient.colors = [
-        ControlCenterChrome.windowBackgroundTop.cgColor,
-        ControlCenterChrome.windowBackgroundBottom.cgColor
-    ]
-    gradient.startPoint = CGPoint(x: 0.5, y: 1.0)
-    gradient.endPoint = CGPoint(x: 0.5, y: 0.0)
-    gradient.frame = view.bounds
-    gradient.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-    view.layer?.insertSublayer(gradient, at: 0)
+    view.layer?.backgroundColor = ControlCenterChrome.windowBackground.cgColor
 }
 
-func controlCenterCardView() -> NSView {
-    let card = NSView()
-    card.translatesAutoresizingMaskIntoConstraints = false
-    card.wantsLayer = true
-    card.layer?.cornerRadius = 20
-    card.layer?.cornerCurve = .continuous
-    card.layer?.borderWidth = 1
-    card.layer?.borderColor = ControlCenterChrome.cardBorder.cgColor
-    card.layer?.backgroundColor = ControlCenterChrome.cardBackground.cgColor
-    card.layer?.shadowColor = ControlCenterChrome.cardShadow.cgColor
-    card.layer?.shadowOpacity = 1
-    card.layer?.shadowRadius = 18
-    card.layer?.shadowOffset = CGSize(width: 0, height: 12)
-
-    let overlay = CAGradientLayer()
-    overlay.colors = [
-        ControlCenterChrome.cardOverlay.cgColor,
-        NSColor.clear.cgColor
-    ]
-    overlay.startPoint = CGPoint(x: 0.5, y: 1.0)
-    overlay.endPoint = CGPoint(x: 0.5, y: 0.0)
-    overlay.cornerRadius = 20
-    overlay.cornerCurve = .continuous
-    overlay.frame = CGRect(x: 0, y: 0, width: 10, height: 10)
-    overlay.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-    card.layer?.addSublayer(overlay)
-    return card
+func controlCenterPanelView(cornerRadius: CGFloat = 8) -> NSView {
+    let view = NSView()
+    view.translatesAutoresizingMaskIntoConstraints = false
+    view.wantsLayer = true
+    view.layer?.cornerRadius = cornerRadius
+    view.layer?.cornerCurve = .continuous
+    view.layer?.backgroundColor = ControlCenterChrome.surfaceBackground.cgColor
+    view.layer?.borderWidth = 1
+    view.layer?.borderColor = ControlCenterChrome.borderLight.cgColor
+    return view
 }
 
 func controlCenterSectionTitle(_ text: String) -> NSTextField {
     let label = NSTextField(labelWithString: text)
     label.translatesAutoresizingMaskIntoConstraints = false
-    label.font = .systemFont(ofSize: 13, weight: .semibold)
+    label.font = .systemFont(ofSize: 16, weight: .semibold)
     label.textColor = ControlCenterChrome.titleColor
     return label
 }
@@ -81,112 +64,97 @@ func controlCenterSectionTitle(_ text: String) -> NSTextField {
 func controlCenterSectionCaption(_ text: String) -> NSTextField {
     let label = NSTextField(wrappingLabelWithString: text)
     label.translatesAutoresizingMaskIntoConstraints = false
-    label.font = .systemFont(ofSize: 12)
-    label.textColor = ControlCenterChrome.secondaryColor
+    label.font = .systemFont(ofSize: 14)
+    label.textColor = ControlCenterChrome.bodyColor
     label.maximumNumberOfLines = 0
     return label
 }
 
-func controlCenterInfoRow(title: String, valueLabel: NSTextField) -> NSView {
-    let row = NSStackView()
-    row.translatesAutoresizingMaskIntoConstraints = false
-    row.orientation = .horizontal
-    row.alignment = .centerY
-    row.distribution = .fill
-    row.spacing = 10
-
-    let titleLabel = NSTextField(labelWithString: title)
-    titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
-    titleLabel.textColor = ControlCenterChrome.secondaryColor
-    valueLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-    valueLabel.textColor = ControlCenterChrome.bodyColor
-
-    row.addArrangedSubview(titleLabel)
-    row.addArrangedSubview(NSView())
-    row.addArrangedSubview(valueLabel)
-    return row
+func controlCenterMetaText(_ text: String) -> NSTextField {
+    let label = NSTextField(labelWithString: text)
+    label.translatesAutoresizingMaskIntoConstraints = false
+    label.font = .systemFont(ofSize: 12, weight: .medium)
+    label.textColor = ControlCenterChrome.secondaryColor
+    return label
 }
 
-func controlCenterComboRow(title: String, comboBox: NSComboBox) -> NSView {
-    let row = NSStackView()
-    row.translatesAutoresizingMaskIntoConstraints = false
-    row.orientation = .horizontal
-    row.alignment = .centerY
-    row.distribution = .fill
-    row.spacing = 10
-
-    let titleLabel = NSTextField(labelWithString: title)
-    titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
-    titleLabel.textColor = ControlCenterChrome.secondaryColor
-
-    row.addArrangedSubview(titleLabel)
-    row.addArrangedSubview(NSView())
-    row.addArrangedSubview(comboBox)
-    return row
-}
-
-func controlCenterBadge(title: String, valueLabel: NSTextField) -> NSView {
-    let wrapper = controlCenterCardView()
-    wrapper.layer?.cornerRadius = 14
-
+func controlCenterTag(title: String, valueLabel: NSTextField) -> NSView {
+    let view = controlCenterPanelView(cornerRadius: 8)
     let stack = NSStackView()
     stack.translatesAutoresizingMaskIntoConstraints = false
     stack.orientation = .vertical
     stack.alignment = .leading
-    stack.spacing = 3
+    stack.spacing = 2
 
     let titleLabel = NSTextField(labelWithString: title.uppercased())
-    titleLabel.font = .systemFont(ofSize: 10, weight: .medium)
+    titleLabel.font = .systemFont(ofSize: 9, weight: .semibold)
     titleLabel.textColor = ControlCenterChrome.secondaryColor
-    valueLabel.font = .monospacedSystemFont(ofSize: 13, weight: .semibold)
+
+    valueLabel.font = .monospacedSystemFont(ofSize: 12, weight: .semibold)
     valueLabel.textColor = ControlCenterChrome.titleColor
+    valueLabel.lineBreakMode = .byTruncatingTail
+    valueLabel.maximumNumberOfLines = 1
 
     stack.addArrangedSubview(titleLabel)
     stack.addArrangedSubview(valueLabel)
-    wrapper.addSubview(stack)
+    view.addSubview(stack)
 
     NSLayoutConstraint.activate([
-        stack.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor, constant: 12),
-        stack.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor, constant: -12),
-        stack.topAnchor.constraint(equalTo: wrapper.topAnchor, constant: 10),
-        stack.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor, constant: -10)
+        stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+        stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+        stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 6),
+        stack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -6)
     ])
 
-    return wrapper
+    return view
 }
 
 func controlCenterStyleButton(_ button: NSButton, style: ControlCenterButtonStyle) {
-    button.bezelStyle = .rounded
-    button.controlSize = .large
-    button.isBordered = true
+    button.translatesAutoresizingMaskIntoConstraints = false
     button.wantsLayer = true
-    button.font = .systemFont(ofSize: 12, weight: .semibold)
+    button.isBordered = false
+    button.bezelStyle = .regularSquare
+    button.font = .systemFont(ofSize: 13, weight: .medium)
+    button.layer?.cornerRadius = 6
+    button.layer?.cornerCurve = .continuous
+    button.layer?.borderWidth = 1
 
     switch style {
     case .primary:
-        button.contentTintColor = .white
-        button.layer?.backgroundColor = ControlCenterChrome.accentColor.withAlphaComponent(0.20).cgColor
-        button.layer?.borderColor = ControlCenterChrome.accentColor.withAlphaComponent(0.36).cgColor
+        button.contentTintColor = ControlCenterChrome.accentColor
+        button.layer?.backgroundColor = ControlCenterChrome.accentBackground.cgColor
+        button.layer?.borderColor = ControlCenterChrome.accentColor.withAlphaComponent(0.3).cgColor
     case .secondary:
+        button.contentTintColor = ControlCenterChrome.titleColor
+        button.layer?.backgroundColor = ControlCenterChrome.surfaceBackground.cgColor
+        button.layer?.borderColor = ControlCenterChrome.borderStrong.cgColor
+    case .ghost:
         button.contentTintColor = ControlCenterChrome.bodyColor
-        button.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
-        button.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
-    case .subtle:
-        button.contentTintColor = ControlCenterChrome.secondaryColor
         button.layer?.backgroundColor = NSColor.clear.cgColor
-        button.layer?.borderColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        button.layer?.borderColor = NSColor.clear.cgColor
     }
+}
 
-    button.layer?.cornerRadius = 10
+func controlCenterStyleSidebarButton(_ button: NSButton, selected: Bool) {
+    button.translatesAutoresizingMaskIntoConstraints = false
+    button.wantsLayer = true
+    button.isBordered = false
+    button.bezelStyle = .regularSquare
+    button.font = .systemFont(ofSize: 13, weight: .medium)
+    button.alignment = .left
+    button.imagePosition = .imageLeading
+    button.imageScaling = .scaleProportionallyDown
+    button.contentTintColor = selected ? ControlCenterChrome.titleColor : ControlCenterChrome.bodyColor
+    button.layer?.cornerRadius = 6
     button.layer?.cornerCurve = .continuous
-    button.layer?.borderWidth = 1
+    button.layer?.backgroundColor = selected ? NSColor.white.withAlphaComponent(0.08).cgColor : NSColor.clear.cgColor
 }
 
 func controlCenterStyleComboBox(_ comboBox: NSComboBox) {
-    comboBox.font = .monospacedSystemFont(ofSize: 13, weight: .medium)
+    comboBox.font = .systemFont(ofSize: 13, weight: .medium)
     comboBox.textColor = ControlCenterChrome.titleColor
     comboBox.drawsBackground = true
-    comboBox.backgroundColor = NSColor.white.withAlphaComponent(0.06)
+    comboBox.backgroundColor = ControlCenterChrome.windowBackground
 }
 
 func controlCenterBrandIcon(size: CGFloat) -> NSImage {
@@ -197,8 +165,8 @@ func controlCenterBrandIcon(size: CGFloat) -> NSImage {
 
     return makePulseImage(
         size: NSSize(width: size, height: size),
-        color: NSColor.white.withAlphaComponent(0.96),
-        backgroundColor: NSColor(calibratedWhite: 0.08, alpha: 1.0),
+        color: ControlCenterChrome.bodyColor,
+        backgroundColor: ControlCenterChrome.surfaceBackground,
         template: false
     )
 }

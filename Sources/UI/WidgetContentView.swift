@@ -4,11 +4,14 @@ import Foundation
 final class WidgetContentView: NSView {
     enum VisualState {
         case idle
-        case active
-        case processing
+        case dictationActive
+        case recordingActive
+        case processingDictation
+        case processingRecording
     }
 
     var onToggle: (() -> Void)?
+    var onStopRecording: (() -> Void)?
 
     private let idleContainer = NSView()
     private let capsuleView = NSVisualEffectView()
@@ -17,10 +20,21 @@ final class WidgetContentView: NSView {
     private let idleTrackView = NSView()
     private let idleIndicatorView = NSView()
     private let contentContainer = NSView()
-    private let contentStack = NSStackView()
-    private let waveformStack = NSStackView()
-    private let waveformBars = (0..<25).map { _ in NSView() }
-    private let timerLabel = NSTextField(labelWithString: "00:00")
+
+    private let dictationRow = NSStackView()
+    private let recordingRow = NSStackView()
+    private let processingRow = NSStackView()
+
+    private let recordingStopSlot = NSView()
+    private let stopButton = NSButton()
+
+    private let dictationWaveformView = WaveformStripView()
+    private let recordingWaveformView = WaveformStripView()
+    private let processingWaveformView = WaveformStripView()
+
+    private let dictationTimerLabel = NSTextField(labelWithString: "00:00")
+    private let recordingTimerLabel = NSTextField(labelWithString: "00:00")
+    private let processingTimerLabel = NSTextField(labelWithString: "00:00")
 
     private let capsuleBackgroundLayer = CAGradientLayer()
     private let topSheenLayer = CAGradientLayer()
@@ -29,7 +43,6 @@ final class WidgetContentView: NSView {
 
     private let animationController = WidgetAnimationController()
 
-    private var waveformHeightConstraints: [NSLayoutConstraint] = []
     private var trackingAreaRef: NSTrackingArea?
     private var visualState: VisualState = .idle
     private var isHovered = false
@@ -37,7 +50,7 @@ final class WidgetContentView: NSView {
     private var idleGlowWidthConstraint: NSLayoutConstraint?
     private var idleGlowHeightConstraint: NSLayoutConstraint?
     private var idleIndicatorWidthConstraint: NSLayoutConstraint?
-    private var currentAudioLevels: [CGFloat] = Array(repeating: 0, count: 25)
+    private var currentAudioLevels: [CGFloat] = []
     private var recordingStartDate: Date?
     private var frozenDuration: TimeInterval?
     private var timerUpdateTimer: Timer?
@@ -89,23 +102,32 @@ final class WidgetContentView: NSView {
 
     func updateAudioLevels(_ levels: [CGFloat]) {
         currentAudioLevels = levels
-        guard visualState == .active else { return }
-        applyLiveWaveform(levels: levels)
+        switch visualState {
+        case .dictationActive:
+            dictationWaveformView.apply(levels: levels, animated: true)
+        case .recordingActive:
+            recordingWaveformView.apply(levels: levels, animated: true)
+        default:
+            break
+        }
     }
 
     func updateTimer(startDate: Date?, frozenDuration: TimeInterval?) {
         recordingStartDate = startDate
         self.frozenDuration = frozenDuration
 
+        let resolvedValue: String
         if let frozenDuration {
-            timerLabel.stringValue = format(duration: frozenDuration)
+            resolvedValue = format(duration: frozenDuration)
         } else if let startDate {
-            timerLabel.stringValue = format(duration: Date().timeIntervalSince(startDate))
+            resolvedValue = format(duration: Date().timeIntervalSince(startDate))
         } else {
-            timerLabel.stringValue = "00:00"
+            resolvedValue = "00:00"
         }
 
-        if visualState == .active, startDate != nil {
+        setTimerText(resolvedValue)
+
+        if (visualState == .dictationActive || visualState == .recordingActive), startDate != nil {
             startTimerUpdates()
         } else {
             stopTimerUpdates()
@@ -150,7 +172,7 @@ final class WidgetContentView: NSView {
         configureBorder()
         configureIdleGlow()
         configureIdleTrack()
-        configureContent()
+        configureRows()
 
         idleContainer.translatesAutoresizingMaskIntoConstraints = false
         idleContainer.wantsLayer = true
@@ -162,9 +184,9 @@ final class WidgetContentView: NSView {
         idleTrackView.addSubview(idleIndicatorView)
         capsuleView.addSubview(borderView)
         capsuleView.addSubview(contentContainer)
-        contentContainer.addSubview(contentStack)
-        contentStack.addArrangedSubview(waveformStack)
-        contentStack.addArrangedSubview(timerLabel)
+        contentContainer.addSubview(dictationRow)
+        contentContainer.addSubview(recordingRow)
+        contentContainer.addSubview(processingRow)
     }
 
     private func configureBorder() {
@@ -212,49 +234,79 @@ final class WidgetContentView: NSView {
         idleIndicatorView.layer?.addSublayer(idleIndicatorGradientLayer)
     }
 
-    private func configureContent() {
+    private func configureRows() {
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
-        contentStack.translatesAutoresizingMaskIntoConstraints = false
-        contentStack.orientation = .horizontal
-        contentStack.alignment = .centerY
-        contentStack.distribution = .fill
-        contentStack.spacing = WidgetTheme.contentSpacing
-        configureWaveform()
-        configureTimer()
+
+        configureRowStack(dictationRow)
+        configureRowStack(recordingRow)
+        configureRowStack(processingRow)
+
+        configureStopButton()
+        configureTimerLabel(dictationTimerLabel)
+        configureTimerLabel(recordingTimerLabel)
+        configureTimerLabel(processingTimerLabel)
+
+        dictationWaveformView.translatesAutoresizingMaskIntoConstraints = false
+        dictationWaveformView.configure(for: .dictation, accentColor: WidgetTheme.activeAccent)
+
+        recordingWaveformView.translatesAutoresizingMaskIntoConstraints = false
+        recordingWaveformView.configure(for: .recording, accentColor: WidgetTheme.activeAccent)
+
+        processingWaveformView.translatesAutoresizingMaskIntoConstraints = false
+        processingWaveformView.configure(for: .processing, accentColor: WidgetTheme.processingAccent)
+
+        recordingStopSlot.translatesAutoresizingMaskIntoConstraints = false
+        recordingStopSlot.addSubview(stopButton)
+
+        dictationRow.addArrangedSubview(dictationWaveformView)
+        dictationRow.addArrangedSubview(dictationTimerLabel)
+
+        recordingRow.addArrangedSubview(recordingStopSlot)
+        recordingRow.addArrangedSubview(recordingWaveformView)
+        recordingRow.addArrangedSubview(recordingTimerLabel)
+
+        processingRow.addArrangedSubview(processingWaveformView)
+        processingRow.addArrangedSubview(processingTimerLabel)
     }
 
-    private func configureWaveform() {
-        waveformStack.translatesAutoresizingMaskIntoConstraints = false
-        waveformStack.orientation = .horizontal
-        waveformStack.alignment = .centerY
-        waveformStack.distribution = .fill
-        waveformStack.spacing = WidgetTheme.waveformSpacing
-
-        for bar in waveformBars {
-            bar.translatesAutoresizingMaskIntoConstraints = false
-            bar.wantsLayer = true
-            bar.layer?.cornerRadius = WidgetTheme.waveformBarCornerRadius
-            bar.layer?.cornerCurve = .continuous
-            bar.layer?.backgroundColor = WidgetTheme.activeAccent.cgColor
-            waveformStack.addArrangedSubview(bar)
-
-            let width = bar.widthAnchor.constraint(equalToConstant: WidgetTheme.waveformBarWidth)
-            let height = bar.heightAnchor.constraint(equalToConstant: 4)
-            width.isActive = true
-            height.isActive = true
-            waveformHeightConstraints.append(height)
-        }
+    private func configureRowStack(_ row: NSStackView) {
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.distribution = .fill
+        row.spacing = WidgetTheme.contentSpacing
     }
 
-    private func configureTimer() {
-        timerLabel.translatesAutoresizingMaskIntoConstraints = false
-        timerLabel.font = WidgetTheme.timerFont
-        timerLabel.textColor = WidgetTheme.timerColor
-        timerLabel.alignment = .right
-        timerLabel.lineBreakMode = .byClipping
-        timerLabel.maximumNumberOfLines = 1
-        timerLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-        timerLabel.setContentHuggingPriority(.required, for: .horizontal)
+    private func configureStopButton() {
+        stopButton.translatesAutoresizingMaskIntoConstraints = false
+        stopButton.isBordered = false
+        stopButton.bezelStyle = .regularSquare
+        stopButton.wantsLayer = true
+        stopButton.layer?.cornerRadius = WidgetTheme.stopButtonCornerRadius
+        stopButton.layer?.cornerCurve = .continuous
+        stopButton.layer?.backgroundColor = WidgetTheme.stopButtonFill.cgColor
+        stopButton.layer?.borderWidth = 1
+        stopButton.layer?.borderColor = WidgetTheme.stopButtonBorder.cgColor
+        stopButton.contentTintColor = WidgetTheme.stopButtonSymbol
+        stopButton.image = NSImage(
+            systemSymbolName: "stop.fill",
+            accessibilityDescription: "Stop recording"
+        )?.withSymbolConfiguration(.init(pointSize: 8, weight: .bold))
+        stopButton.imagePosition = .imageOnly
+        stopButton.imageScaling = .scaleProportionallyDown
+        stopButton.target = self
+        stopButton.action = #selector(handleStopButton)
+    }
+
+    private func configureTimerLabel(_ label: NSTextField) {
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = WidgetTheme.timerFont
+        label.textColor = WidgetTheme.timerColor
+        label.alignment = .right
+        label.lineBreakMode = .byClipping
+        label.maximumNumberOfLines = 1
+        label.setContentCompressionResistancePriority(.required, for: .horizontal)
+        label.setContentHuggingPriority(.required, for: .horizontal)
     }
 
     private func configureConstraints() {
@@ -264,6 +316,10 @@ final class WidgetContentView: NSView {
         self.idleGlowWidthConstraint = idleGlowWidthConstraint
         self.idleGlowHeightConstraint = idleGlowHeightConstraint
         self.idleIndicatorWidthConstraint = idleIndicatorWidthConstraint
+
+        let dictationGeometry = WidgetTheme.waveformGeometry(for: .dictation)
+        let recordingGeometry = WidgetTheme.waveformGeometry(for: .recording)
+        let processingGeometry = WidgetTheme.waveformGeometry(for: .processing)
 
         NSLayoutConstraint.activate([
             widthAnchor.constraint(equalToConstant: WidgetTheme.widgetOuterSize.width),
@@ -304,59 +360,80 @@ final class WidgetContentView: NSView {
             contentContainer.topAnchor.constraint(equalTo: capsuleView.topAnchor),
             contentContainer.bottomAnchor.constraint(equalTo: capsuleView.bottomAnchor),
 
-            contentStack.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: WidgetTheme.contentHorizontalInset),
-            contentStack.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -WidgetTheme.contentHorizontalInset),
-            contentStack.centerYAnchor.constraint(equalTo: contentContainer.centerYAnchor),
+            dictationRow.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: WidgetTheme.contentHorizontalInset),
+            dictationRow.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -WidgetTheme.contentHorizontalInset),
+            dictationRow.centerYAnchor.constraint(equalTo: contentContainer.centerYAnchor),
 
-            waveformStack.widthAnchor.constraint(equalToConstant: WidgetTheme.waveformWidth),
-            waveformStack.heightAnchor.constraint(equalToConstant: WidgetTheme.waveformHeight),
-            timerLabel.widthAnchor.constraint(equalToConstant: WidgetTheme.timerWidth)
+            recordingRow.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: WidgetTheme.contentHorizontalInset),
+            recordingRow.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -WidgetTheme.contentHorizontalInset),
+            recordingRow.centerYAnchor.constraint(equalTo: contentContainer.centerYAnchor),
+
+            processingRow.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: WidgetTheme.contentHorizontalInset),
+            processingRow.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -WidgetTheme.contentHorizontalInset),
+            processingRow.centerYAnchor.constraint(equalTo: contentContainer.centerYAnchor),
+
+            recordingStopSlot.widthAnchor.constraint(equalToConstant: WidgetTheme.stopButtonSlotWidth),
+            stopButton.centerXAnchor.constraint(equalTo: recordingStopSlot.centerXAnchor),
+            stopButton.centerYAnchor.constraint(equalTo: recordingStopSlot.centerYAnchor),
+            stopButton.widthAnchor.constraint(equalToConstant: WidgetTheme.stopButtonSize),
+            stopButton.heightAnchor.constraint(equalToConstant: WidgetTheme.stopButtonSize),
+
+            dictationWaveformView.widthAnchor.constraint(equalToConstant: dictationGeometry.width),
+            dictationWaveformView.heightAnchor.constraint(equalToConstant: dictationGeometry.height),
+            dictationTimerLabel.widthAnchor.constraint(equalToConstant: WidgetTheme.timerSlotWidth),
+
+            recordingWaveformView.widthAnchor.constraint(equalToConstant: recordingGeometry.width),
+            recordingWaveformView.heightAnchor.constraint(equalToConstant: recordingGeometry.height),
+            recordingTimerLabel.widthAnchor.constraint(equalToConstant: WidgetTheme.timerSlotWidth),
+
+            processingWaveformView.widthAnchor.constraint(equalToConstant: processingGeometry.width),
+            processingWaveformView.heightAnchor.constraint(equalToConstant: processingGeometry.height),
+            processingTimerLabel.widthAnchor.constraint(equalToConstant: WidgetTheme.timerSlotWidth)
         ])
     }
 
     private func renderVisualState() {
+        dictationRow.isHidden = true
+        recordingRow.isHidden = true
+        processingRow.isHidden = true
+
         switch visualState {
         case .idle:
             idleContainer.isHidden = false
             capsuleView.isHidden = true
-            contentContainer.isHidden = true
-            idleGlowView.isHidden = false
-            idleTrackView.isHidden = false
             stopTimerUpdates()
             animationController.stop()
-            animationController.reset(
-                waveformHeightConstraints: waveformHeightConstraints,
-                waveformBars: waveformBars,
-                auraView: nil
-            )
             applyIdleAppearance()
-        case .active:
+        case .dictationActive:
             idleContainer.isHidden = true
             capsuleView.isHidden = false
-            contentContainer.isHidden = false
-            idleGlowView.isHidden = true
-            idleTrackView.isHidden = true
-            timerLabel.isHidden = false
+            dictationRow.isHidden = false
             if recordingStartDate != nil {
                 startTimerUpdates()
             }
-            applyContentAppearance(accent: WidgetTheme.activeAccent, state: .active)
             animationController.stop()
-            applyLiveWaveform(levels: currentAudioLevels)
-        case .processing:
+            applyContentAppearance(accent: WidgetTheme.activeAccent, state: .dictationActive)
+            dictationWaveformView.apply(levels: currentAudioLevels, animated: false)
+        case .recordingActive:
             idleContainer.isHidden = true
             capsuleView.isHidden = false
-            contentContainer.isHidden = false
-            idleGlowView.isHidden = true
-            idleTrackView.isHidden = true
-            timerLabel.isHidden = false
+            recordingRow.isHidden = false
+            if recordingStartDate != nil {
+                startTimerUpdates()
+            }
+            animationController.stop()
+            applyContentAppearance(accent: WidgetTheme.activeAccent, state: .recordingActive)
+            recordingWaveformView.apply(levels: currentAudioLevels, animated: false)
+        case .processingDictation, .processingRecording:
+            idleContainer.isHidden = true
+            capsuleView.isHidden = false
+            processingRow.isHidden = false
             stopTimerUpdates()
-            applyContentAppearance(accent: WidgetTheme.processingAccent, state: .processing)
-            animationController.startProcessing(
-                waveformHeightConstraints: waveformHeightConstraints,
-                waveformBars: waveformBars,
-                auraView: nil
-            )
+            applyContentAppearance(accent: WidgetTheme.processingAccent, state: visualState)
+            let processingBarCount = WidgetTheme.waveformGeometry(for: .processing).barCount
+            animationController.startProcessing(barCount: processingBarCount) { [weak self] levels in
+                self?.processingWaveformView.apply(levels: levels, animated: true)
+            }
         }
     }
 
@@ -371,21 +448,11 @@ final class WidgetContentView: NSView {
 
     private func applyContentAppearance(accent: NSColor, state: VisualState) {
         borderView.layer?.borderColor = WidgetTheme.borderColor(for: state, hovered: false).cgColor
-        capsuleView.animator().alphaValue = state == .processing ? WidgetTheme.processingAlpha : WidgetTheme.activeAlpha
-        waveformBars.forEach { $0.layer?.backgroundColor = accent.cgColor }
-    }
-
-    private func applyLiveWaveform(levels: [CGFloat]) {
-        guard !waveformHeightConstraints.isEmpty else { return }
-        let minimumHeight: CGFloat = 4
-        let maximumAdditionalHeight: CGFloat = 20
-
-        for (index, constraint) in waveformHeightConstraints.enumerated() {
-            let level = levels.indices.contains(index) ? levels[index] : 0
-            let shaped = max(0, min(1, level))
-            constraint.animator().constant = minimumHeight + (maximumAdditionalHeight * shaped)
-            waveformBars[index].animator().alphaValue = 0.58 + (0.42 * shaped)
-        }
+        let isProcessing = state == .processingDictation || state == .processingRecording
+        capsuleView.animator().alphaValue = isProcessing ? WidgetTheme.processingAlpha : WidgetTheme.activeAlpha
+        dictationWaveformView.setAccentColor(accent)
+        recordingWaveformView.setAccentColor(accent)
+        processingWaveformView.setAccentColor(accent)
     }
 
     private func startTimerUpdates() {
@@ -402,8 +469,14 @@ final class WidgetContentView: NSView {
     }
 
     private func tickTimer() {
-        guard visualState == .active, let recordingStartDate else { return }
-        timerLabel.stringValue = format(duration: Date().timeIntervalSince(recordingStartDate))
+        guard (visualState == .dictationActive || visualState == .recordingActive), let recordingStartDate else { return }
+        setTimerText(format(duration: Date().timeIntervalSince(recordingStartDate)))
+    }
+
+    private func setTimerText(_ text: String) {
+        dictationTimerLabel.stringValue = text
+        recordingTimerLabel.stringValue = text
+        processingTimerLabel.stringValue = text
     }
 
     private func format(duration: TimeInterval) -> String {
@@ -451,6 +524,11 @@ final class WidgetContentView: NSView {
         guard window != nil else { return }
         guard !didDrag else { return }
         onToggle?()
+    }
+
+    @objc
+    private func handleStopButton() {
+        onStopRecording?()
     }
 }
 

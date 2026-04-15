@@ -179,6 +179,44 @@ struct OpenAICompatibleClient {
         return cleaned
     }
 
+    func summarize(text: String) async throws -> String {
+        guard config.resolvedOpenAIAPIKey(environment: environment) != nil else {
+            throw SpeakFlowError.cleanupFailed("An OpenAI API key is required to summarize recordings.")
+        }
+
+        let url = try endpointURL("/chat/completions")
+        var request = try authorizedRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let payload = ChatCompletionRequest(
+            model: config.cleanupModel,
+            messages: [
+                .init(
+                    role: "system",
+                    content: """
+You summarize recorded meeting notes and spoken monologues.
+Write a concise, useful summary in the same language as the transcript.
+Preserve key decisions, tasks, and named entities.
+Use plain text only with short paragraphs or short bullet-like lines.
+"""
+                ),
+                .init(role: "user", content: text)
+            ]
+        )
+        request.httpBody = try JSONEncoder().encode(payload)
+
+        let (responseData, response) = try await session.data(for: request)
+        try validateHTTPResponse(response, data: responseData, failureCase: SpeakFlowError.cleanupFailed)
+
+        let decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: responseData)
+        let summary = decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if summary.isEmpty {
+            throw SpeakFlowError.cleanupFailed("The summary model returned an empty result.")
+        }
+        return summary
+    }
+
     private func resolvedTranscriptionModel(_ override: String?) -> String {
         let candidate = (override ?? config.transcriptionModel).trimmingCharacters(in: .whitespacesAndNewlines)
         if !candidate.isEmpty {

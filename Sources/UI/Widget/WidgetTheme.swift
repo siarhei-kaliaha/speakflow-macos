@@ -1,6 +1,23 @@
 import AppKit
 import Foundation
 
+enum WidgetWaveformLayoutMode {
+    case dictation
+    case recording
+    case processing
+}
+
+struct WidgetWaveformGeometry {
+    let width: CGFloat
+    let height: CGFloat
+    let barCount: Int
+    let barWidth: CGFloat
+    let barGap: CGFloat
+    let minBarHeight: CGFloat
+    let maxBarHeight: CGFloat
+    let barCornerRadius: CGFloat
+}
+
 enum WidgetTheme {
     static let widgetOuterSize = NSSize(width: 164, height: 40)
     static let widgetCapsuleSize = NSSize(width: 156, height: 32)
@@ -14,8 +31,10 @@ enum WidgetTheme {
     static let glowCornerRadius: CGFloat = 8
     static let idleTrackCornerRadius: CGFloat = 4
     static let idleIndicatorCornerRadius: CGFloat = 1.5
-    static let waveformBarWidth: CGFloat = 2.0
-    static let waveformBarCornerRadius: CGFloat = 1.25
+    static let stopButtonSize: CGFloat = 18
+    static let stopButtonCornerRadius: CGFloat = 9
+    static let stopButtonSlotWidth: CGFloat = 24
+    static let timerSlotWidth: CGFloat = 40
 
     static let idleGlowRestWidth: CGFloat = 56
     static let idleGlowHoverWidth: CGFloat = 62
@@ -28,14 +47,18 @@ enum WidgetTheme {
     static let idleIndicatorHoverWidth: CGFloat = 74
     static let idleIndicatorHeight: CGFloat = 3
 
-    static let waveformWidth: CGFloat = 98
-    static let waveformHeight: CGFloat = 18
-    static let waveformSpacing: CGFloat = 2.0
     static let contentHorizontalInset: CGFloat = 10
     static let contentSpacing: CGFloat = 8
-    static let timerWidth: CGFloat = 30
+    static let waveformLaneHeight: CGFloat = 18
+    static let waveformBarWidth: CGFloat = 2
+    static let waveformBarGap: CGFloat = 2
+    static let waveformMinBarHeight: CGFloat = 4
+    static let waveformMaxBarHeight: CGFloat = 14
     static let timerFont = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .semibold)
     static let timerColor = NSColor.white.withAlphaComponent(0.96)
+    static let stopButtonFill = NSColor.white.withAlphaComponent(0.08)
+    static let stopButtonBorder = NSColor.white.withAlphaComponent(0.12)
+    static let stopButtonSymbol = NSColor.white.withAlphaComponent(0.88)
 
     static let dragThreshold: CGFloat = 2
 
@@ -50,7 +73,7 @@ enum WidgetTheme {
     ]
 
     static let topSheenGradientColors: [CGColor] = [
-        NSColor.white.withAlphaComponent(0.07).cgColor,
+        NSColor.white.withAlphaComponent(0.05).cgColor,
         NSColor.white.withAlphaComponent(0.0).cgColor
     ]
 
@@ -69,13 +92,38 @@ enum WidgetTheme {
     static let activeAccent = NSColor(calibratedRed: 1.0, green: 0.165, blue: 0.373, alpha: 1.0)
     static let processingAccent = NSColor(calibratedRed: 0.0, green: 0.898, blue: 1.0, alpha: 1.0)
 
+    private static let contentInnerWidth = widgetCapsuleSize.width - (contentHorizontalInset * 2)
+
+    static func waveformGeometry(for mode: WidgetWaveformLayoutMode) -> WidgetWaveformGeometry {
+        let usableWidth: CGFloat
+        switch mode {
+        case .dictation, .processing:
+            usableWidth = contentInnerWidth - timerSlotWidth - contentSpacing
+        case .recording:
+            usableWidth = contentInnerWidth - stopButtonSlotWidth - timerSlotWidth - (contentSpacing * 2)
+        }
+
+        let barCount = max(8, Int(floor((usableWidth + waveformBarGap) / (waveformBarWidth + waveformBarGap))))
+        let resolvedWidth = CGFloat(barCount) * waveformBarWidth + CGFloat(max(0, barCount - 1)) * waveformBarGap
+        return WidgetWaveformGeometry(
+            width: resolvedWidth,
+            height: waveformLaneHeight,
+            barCount: barCount,
+            barWidth: waveformBarWidth,
+            barGap: waveformBarGap,
+            minBarHeight: waveformMinBarHeight,
+            maxBarHeight: waveformMaxBarHeight,
+            barCornerRadius: 1.25
+        )
+    }
+
     static func borderColor(for state: WidgetContentView.VisualState, hovered: Bool) -> NSColor {
         switch state {
         case .idle:
             return NSColor(calibratedWhite: hovered ? 0.33 : 0.24, alpha: hovered ? 0.72 : 0.58)
-        case .active:
+        case .dictationActive, .recordingActive:
             return NSColor(calibratedWhite: 0.28, alpha: 0.72)
-        case .processing:
+        case .processingDictation, .processingRecording:
             return NSColor(calibratedWhite: 0.30, alpha: 0.74)
         }
     }

@@ -3,8 +3,8 @@ import Foundation
 
 final class ControlCenterMetricsView: NSView {
     private let dictationsValueLabel = NSTextField(labelWithString: "0")
-    private let wordsValueLabel = NSTextField(labelWithString: "0")
-    private let charactersValueLabel = NSTextField(labelWithString: "0")
+    private let recordingsValueLabel = NSTextField(labelWithString: "0")
+    private let recordedTimeValueLabel = NSTextField(labelWithString: "00:00")
     private let lastUsedValueLabel = NSTextField(labelWithString: "Never")
 
     override init(frame frameRect: NSRect) {
@@ -19,9 +19,9 @@ final class ControlCenterMetricsView: NSView {
 
     func update(stats: UsageStats) {
         dictationsValueLabel.stringValue = "\(stats.totalDictations)"
-        wordsValueLabel.stringValue = "\(stats.totalWords)"
-        charactersValueLabel.stringValue = "\(stats.totalCharacters)"
-        if let lastUsed = stats.lastDictationAt {
+        recordingsValueLabel.stringValue = "\(stats.totalRecordings)"
+        recordedTimeValueLabel.stringValue = format(duration: stats.totalRecordedSeconds)
+        if let lastUsed = stats.lastCaptureAt {
             let formatter = RelativeDateTimeFormatter()
             formatter.unitsStyle = .short
             lastUsedValueLabel.stringValue = formatter.localizedString(for: lastUsed, relativeTo: Date())
@@ -31,56 +31,97 @@ final class ControlCenterMetricsView: NSView {
     }
 
     private func setupUI() {
+        heightAnchor.constraint(equalToConstant: 84).isActive = true
+
+        let bar = controlCenterPanelView(cornerRadius: 8)
+        addSubview(bar)
+
         let row = NSStackView()
         row.translatesAutoresizingMaskIntoConstraints = false
         row.orientation = .horizontal
-        row.alignment = .top
+        row.alignment = .centerY
         row.distribution = .fillEqually
-        row.spacing = 16
+        row.spacing = 0
+        bar.addSubview(row)
 
         [
-            makeMetricCard(title: "Dictations", valueLabel: dictationsValueLabel),
-            makeMetricCard(title: "Words", valueLabel: wordsValueLabel),
-            makeMetricCard(title: "Characters", valueLabel: charactersValueLabel),
-            makeMetricCard(title: "Last Used", valueLabel: lastUsedValueLabel)
-        ].forEach { row.addArrangedSubview($0) }
-
-        addSubview(row)
+            makeMetric(title: "Dictations", valueLabel: dictationsValueLabel),
+            makeMetric(title: "Recordings", valueLabel: recordingsValueLabel),
+            makeMetric(title: "Recorded", valueLabel: recordedTimeValueLabel),
+            makeMetric(title: "Last Capture", valueLabel: lastUsedValueLabel)
+        ].enumerated().forEach { index, metric in
+            if index > 0 {
+                let separator = NSView()
+                separator.wantsLayer = true
+                separator.layer?.backgroundColor = ControlCenterChrome.borderLight.cgColor
+                separator.translatesAutoresizingMaskIntoConstraints = false
+                let wrapper = NSView()
+                wrapper.translatesAutoresizingMaskIntoConstraints = false
+                wrapper.addSubview(metric)
+                wrapper.addSubview(separator)
+                NSLayoutConstraint.activate([
+                    separator.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
+                    separator.topAnchor.constraint(equalTo: wrapper.topAnchor),
+                    separator.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
+                    separator.widthAnchor.constraint(equalToConstant: 1),
+                    metric.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
+                    metric.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
+                    metric.topAnchor.constraint(equalTo: wrapper.topAnchor),
+                    metric.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor)
+                ])
+                row.addArrangedSubview(wrapper)
+            } else {
+                row.addArrangedSubview(metric)
+            }
+        }
 
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor),
-            row.topAnchor.constraint(equalTo: topAnchor),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor)
+            bar.leadingAnchor.constraint(equalTo: leadingAnchor),
+            bar.trailingAnchor.constraint(equalTo: trailingAnchor),
+            bar.topAnchor.constraint(equalTo: topAnchor),
+            bar.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            row.leadingAnchor.constraint(equalTo: bar.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: bar.trailingAnchor),
+            row.topAnchor.constraint(equalTo: bar.topAnchor),
+            row.bottomAnchor.constraint(equalTo: bar.bottomAnchor)
         ])
     }
 
-    private func makeMetricCard(title: String, valueLabel: NSTextField) -> NSView {
-        let card = controlCenterCardView()
-        card.layer?.cornerRadius = 16
+    private func makeMetric(title: String, valueLabel: NSTextField) -> NSView {
+        let view = NSView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+
         let stack = NSStackView()
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
+        stack.alignment = .width
+        stack.spacing = 6
+        view.addSubview(stack)
 
         let titleLabel = NSTextField(labelWithString: title.uppercased())
-        titleLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        titleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         titleLabel.textColor = ControlCenterChrome.secondaryColor
-        valueLabel.font = .systemFont(ofSize: 25, weight: .bold)
+
+        valueLabel.font = .systemFont(ofSize: 24, weight: .semibold)
         valueLabel.textColor = ControlCenterChrome.titleColor
 
         stack.addArrangedSubview(titleLabel)
         stack.addArrangedSubview(valueLabel)
-        card.addSubview(stack)
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
-            stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 16),
-            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -16)
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
+            stack.centerYAnchor.constraint(equalTo: view.centerYAnchor)
         ])
 
-        return card
+        return view
+    }
+
+    private func format(duration: TimeInterval) -> String {
+        let totalSeconds = max(0, Int(duration.rounded(.down)))
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 }
