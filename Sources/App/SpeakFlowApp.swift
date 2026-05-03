@@ -3,6 +3,7 @@ import AVFoundation
 import ApplicationServices
 import Carbon
 import Foundation
+import UserNotifications
 
 final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     private let configStore = ConfigStore()
@@ -12,6 +13,8 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     private var stats = UsageStats.empty
     private var realtimeTranscriber: ElevenLabsRealtimeTranscriber?
     private let recorderController = RecorderController()
+    @MainActor private lazy var meetingDetectionService = makeMeetingDetectionService()
+    @MainActor private lazy var captureNotificationService = makeCaptureNotificationService()
     private var state: DictationState = .idle {
         didSet {
             Task { @MainActor in
@@ -51,6 +54,12 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         },
         onStopClick: { [weak self] in
             Task { @MainActor in self?.finishRecordingFromHold() }
+        },
+        onDismissMeeting: { [weak self] in
+            Task { @MainActor in self?.dismissMeetingPrompt() }
+        },
+        onAcceptMeeting: { [weak self] in
+            Task { @MainActor in self?.acceptMeetingPrompt() }
         }
     )
     @MainActor private lazy var hotkeyMonitor = makeHotkeyMonitor()
@@ -67,6 +76,12 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     private var pasteQueue: [String] = []
     private var isPasteInFlight = false
     private var summarizingCaptureID: UUID?
+    private var visibleMeetingPrompt: MeetingSessionCandidate?
+    private var queuedMeetingCandidate: MeetingSessionCandidate?
+    private var pendingMeetingRecordingCandidate: MeetingSessionCandidate?
+    private var isPresentingErrorAlert = false
+    private let transcriptionTimeoutSeconds: TimeInterval = 60
+    private let cleanupTimeoutSeconds: TimeInterval = 25
 
     // MARK: - Diagnostics
 
@@ -114,6 +129,33 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         return monitor
     }
 
+    @MainActor
+    private func makeMeetingDetectionService() -> MeetingDetectionService {
+        let service = MeetingDetectionService(debugLog: debugLog)
+        service.onMeetingDetected = { [weak self] candidate in
+            Task { @MainActor in
+                self?.handleMeetingDetected(candidate)
+            }
+        }
+        service.onMeetingEnded = { [weak self] in
+            Task { @MainActor in
+                self?.handleMeetingEnded()
+            }
+        }
+        return service
+    }
+
+    @MainActor
+    private func makeCaptureNotificationService() -> CaptureNotificationService {
+        let service = CaptureNotificationService(debugLog: debugLog)
+        service.onOpenRecordingCapture = { [weak self] captureID in
+            Task { @MainActor in
+                self?.openRecordingsWorkspace(selectedCaptureID: captureID)
+            }
+        }
+        return service
+    }
+
     // MARK: - Application Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -134,9 +176,11 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             stats = captureStore.loadStats()
             let forceOpenControlCenter = ProcessInfo.processInfo.environment["SPEAKFLOW_OPEN_CONTROL_CENTER"] == "1"
             requestPlatformPermissionsIfNeeded()
+            captureNotificationService.configure()
             _ = statusMenuController
             widgetCoordinator.rebuild(debugLog: debugLog)
             registerHotKey()
+            meetingDetectionService.start()
             refreshUI()
 
             if created || config.resolvedElevenLabsAPIKey() == nil || forceOpenControlCenter {
@@ -152,6 +196,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         debugLog("Application will terminate")
         NotificationCenter.default.removeObserver(self)
         unregisterHotKey()
+        meetingDetectionService.stop()
         realtimeTranscriber?.cancel()
         recorderController.cancel()
     }
@@ -221,7 +266,26 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             summarizingCaptureID: summarizingCaptureID
         )
         controlCenterWindowController?.showWindow(nil)
-        controlCenterWindowController?.presentAsPrimaryWorkspaceWindow()
+        controlCenterWindowController?.present(page: .dictation)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @MainActor
+    private func openRecordingsWorkspace(selectedCaptureID: UUID?) {
+        if controlCenterWindowController == nil {
+            openControlCenter()
+        } else {
+            controlCenterWindowController?.update(
+                config: config,
+                captures: captures,
+                stats: stats,
+                isCapturingHotkey: isCapturingHotkey,
+                activeCaptureMode: activeCaptureMode,
+                summarizingCaptureID: summarizingCaptureID
+            )
+        }
+        controlCenterWindowController?.showWindow(nil)
+        controlCenterWindowController?.present(page: .recordings, selectedRecordingCaptureID: selectedCaptureID)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -492,6 +556,11 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     @MainActor
     private func refreshUI() {
         debugLog("UI refreshed for state=\(String(describing: state)) hotkey=\(config.resolvedHotkeyBinding().rawValue)")
+        if state == .idle, visibleMeetingPrompt == nil, let queuedMeetingCandidate {
+            visibleMeetingPrompt = queuedMeetingCandidate
+            self.queuedMeetingCandidate = nil
+            debugLog("Promoted queued meeting prompt signature=\(queuedMeetingCandidate.signature)")
+        }
         statusMenuController.update(
             state: state,
             hotkeyDisplayName: config.resolvedHotkeyBinding().displayName,
@@ -501,18 +570,71 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         let widgetState: WidgetContentView.VisualState
         switch state {
         case .idle:
-            widgetState = .idle
-            widgetCoordinator.updateAudioLevels(Array(repeating: 0, count: 25))
-            widgetCoordinator.updateTimer(startDate: nil, frozenDuration: nil)
+            if let visibleMeetingPrompt {
+                debugLog("Rendering meeting prompt for signature=\(visibleMeetingPrompt.signature)")
+                widgetState = .meetingDetected
+                widgetCoordinator.updateMeetingPrompt(appName: visibleMeetingPrompt.app.displayName)
+                widgetCoordinator.updateAudioLevels(Array(repeating: 0, count: 25))
+                widgetCoordinator.updateTimer(startDate: nil, frozenDuration: nil)
+            } else {
+                widgetState = .idle
+                widgetCoordinator.updateMeetingPrompt(appName: nil)
+                widgetCoordinator.updateAudioLevels(Array(repeating: 0, count: 25))
+                widgetCoordinator.updateTimer(startDate: nil, frozenDuration: nil)
+            }
         case .recording:
             widgetState = activeCaptureMode == .recording ? .recordingActive : .dictationActive
+            widgetCoordinator.updateMeetingPrompt(appName: nil)
             widgetCoordinator.updateTimer(startDate: recordingStartedAt, frozenDuration: nil)
         case .transcribing:
             widgetState = activeCaptureMode == .recording ? .processingRecording : .processingDictation
+            widgetCoordinator.updateMeetingPrompt(appName: nil)
             widgetCoordinator.updateAudioLevels(Array(repeating: 0, count: 25))
             widgetCoordinator.updateTimer(startDate: nil, frozenDuration: lastRecordingDuration)
         }
         widgetCoordinator.update(state: widgetState)
+    }
+
+    @MainActor
+    private func handleMeetingDetected(_ candidate: MeetingSessionCandidate) {
+        guard state != .recording, state != .transcribing else {
+            queuedMeetingCandidate = candidate
+            debugLog("Queued meeting prompt while busy for \(candidate.app.displayName)")
+            return
+        }
+        debugLog("Showing meeting prompt immediately for signature=\(candidate.signature)")
+        visibleMeetingPrompt = candidate
+        queuedMeetingCandidate = nil
+        refreshUI()
+    }
+
+    @MainActor
+    private func handleMeetingEnded() {
+        debugLog("Meeting ended for visible=\(visibleMeetingPrompt?.signature ?? "none") queued=\(queuedMeetingCandidate?.signature ?? "none")")
+        visibleMeetingPrompt = nil
+        queuedMeetingCandidate = nil
+        if state == .idle {
+            refreshUI()
+        }
+    }
+
+    @MainActor
+    private func dismissMeetingPrompt() {
+        debugLog("Dismissing meeting prompt visible=\(visibleMeetingPrompt?.signature ?? "none") queued=\(queuedMeetingCandidate?.signature ?? "none")")
+        visibleMeetingPrompt = nil
+        queuedMeetingCandidate = nil
+        meetingDetectionService.dismissCurrentMeetingPrompt()
+        refreshUI()
+    }
+
+    @MainActor
+    private func acceptMeetingPrompt() {
+        let candidate = visibleMeetingPrompt ?? queuedMeetingCandidate
+        debugLog("Accepting meeting prompt signature=\(candidate?.signature ?? "none")")
+        visibleMeetingPrompt = nil
+        queuedMeetingCandidate = nil
+        meetingDetectionService.dismissCurrentMeetingPrompt()
+        requestRecordingStart(mode: .recording, meetingCandidate: candidate)
     }
 
     // MARK: - Hotkey Monitoring
@@ -594,6 +716,8 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             let captureMode = await MainActor.run { self.activeCaptureMode ?? .dictation }
             let captureStartedAt = await MainActor.run { self.recordingStartedAt ?? Date() }
             let localAudioFileURL = await self.stopLocalRecordingIfNeeded()
+            var transcriptionSucceeded = false
+            var preservedRecordingURL: URL?
             transcriberCancelAndClear()
             do {
                 guard let localAudioFileURL else {
@@ -608,11 +732,13 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                         self.realtimeTranscriber = nil
                         self.recordingStartedAt = nil
                         self.lastRecordingDuration = nil
+                        self.pendingMeetingRecordingCandidate = nil
                         self.textInsertionController.clearTransientState()
                         self.activeCaptureMode = nil
                         self.state = .idle
                     }
                 } else {
+                    transcriptionSucceeded = true
                     switch captureMode {
                     case .dictation:
                         await applyDictationResult(
@@ -630,30 +756,47 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                 }
             } catch {
                 if self.shouldSilentlyIgnore(error: error) {
+                    if let localAudioFileURL {
+                        preservedRecordingURL = self.preserveRecordingForRecovery(localAudioFileURL)
+                    }
                     await MainActor.run {
                         self.realtimeTranscriber = nil
                         self.recordingStartedAt = nil
                         self.lastRecordingDuration = nil
+                        self.pendingMeetingRecordingCandidate = nil
                         self.textInsertionController.clearTransientState()
                         self.activeCaptureMode = nil
                         self.state = .idle
                         self.debugLog("Ignoring non-fatal transcription error: \(error.localizedDescription)")
                     }
                 } else {
+                    if let localAudioFileURL {
+                        preservedRecordingURL = self.preserveRecordingForRecovery(localAudioFileURL)
+                    }
                     await MainActor.run {
                         self.realtimeTranscriber = nil
                         self.recordingStartedAt = nil
                         self.lastRecordingDuration = nil
+                        self.pendingMeetingRecordingCandidate = nil
                         self.textInsertionController.clearTransientState()
                         self.activeCaptureMode = nil
                         self.state = .idle
                         self.debugLog("Transcription finish failed: \(error.localizedDescription)")
-                        self.presentError(message: self.userFacingTranscriptionFailureMessage(for: error))
+                        self.presentError(
+                            message: self.userFacingTranscriptionFailureMessage(
+                                for: error,
+                                preservedRecordingURL: preservedRecordingURL
+                            )
+                        )
                     }
                 }
             }
             if let localAudioFileURL {
-                try? FileManager.default.removeItem(at: localAudioFileURL)
+                if transcriptionSucceeded {
+                    try? FileManager.default.removeItem(at: localAudioFileURL)
+                } else if preservedRecordingURL == nil {
+                    _ = self.preserveRecordingForRecovery(localAudioFileURL)
+                }
             }
         }
     }
@@ -664,6 +807,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         realtimeTranscriber?.cancel()
         recorderController.cancel()
         realtimeTranscriber = nil
+        pendingMeetingRecordingCandidate = nil
         textInsertionController.clearTransientState()
         hotkeyMonitor.cancelCurrentHold()
         state = .idle
@@ -699,8 +843,17 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
-    private func requestRecordingStart(mode: CaptureMode) {
+    private func requestRecordingStart(mode: CaptureMode, meetingCandidate: MeetingSessionCandidate? = nil) {
+        guard state == .idle else {
+            debugLog("Ignoring recording start for mode=\(mode.displayName) because state=\(state)")
+            return
+        }
+        guard pendingCaptureMode == nil else {
+            debugLog("Ignoring duplicate recording start for mode=\(mode.displayName) while another start is pending")
+            return
+        }
         pendingCaptureMode = mode
+        pendingMeetingRecordingCandidate = meetingCandidate
         debugLog("Requesting recording start; microphoneAuth=\(AVCaptureDevice.authorizationStatus(for: .audio).rawValue)")
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
@@ -712,8 +865,12 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                 }
             }
         case .denied, .restricted:
+            pendingCaptureMode = nil
+            pendingMeetingRecordingCandidate = nil
             presentError(message: "Microphone access is required. Enable it in System Settings > Privacy & Security > Microphone.")
         @unknown default:
+            pendingCaptureMode = nil
+            pendingMeetingRecordingCandidate = nil
             presentError(message: "Microphone permission is unavailable on this system.")
         }
     }
@@ -723,6 +880,8 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         if granted {
             startRecording(mode: pendingCaptureMode ?? .dictation)
         } else {
+            pendingCaptureMode = nil
+            pendingMeetingRecordingCandidate = nil
             presentError(message: "Microphone access was denied. Enable it in System Settings > Privacy & Security > Microphone.")
         }
         pendingCaptureMode = nil
@@ -730,8 +889,14 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func startRecording(mode: CaptureMode) {
+        guard state == .idle else {
+            debugLog("Ignoring startRecording for mode=\(mode.displayName) because state=\(state)")
+            pendingCaptureMode = nil
+            return
+        }
         do {
             config = try configStore.load()
+            pendingCaptureMode = nil
             activeCaptureMode = mode
             if mode == .dictation {
                 textInsertionController.captureTargetApplication()
@@ -741,10 +906,33 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             }
             try recorderController.start()
             let transcriber = ElevenLabsRealtimeTranscriber(config: config)
+            transcriber.onDebugLog = { [weak self] message in
+                Task { @MainActor in
+                    self?.debugLog(message)
+                }
+            }
             transcriber.onAudioLevelsChanged = { [weak self] levels in
                 Task { @MainActor in
                     guard let self, self.state == .recording else { return }
                     self.widgetCoordinator.updateAudioLevels(levels)
+                }
+            }
+            transcriber.onTranscriptChanged = { [weak self] snapshot in
+                Task { @MainActor in
+                    guard let self else { return }
+                    guard self.state == .recording, self.activeCaptureMode == .dictation else { return }
+                    self.debugLog("Live dictation transcript update len=\((snapshot as NSString).length)")
+                    self.textInsertionController.scheduleLiveInsertion(
+                        for: snapshot,
+                        isRecording: true,
+                        preferAccessibilityInsertion: self.config.preferAccessibilityInsertion,
+                        statusHandler: { status in
+                            if self.lastPasteStatus != status {
+                                self.lastPasteStatus = status
+                                self.refreshUI()
+                            }
+                        }
+                    )
                 }
             }
             do {
@@ -763,6 +951,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             recorderController.cancel()
             realtimeTranscriber?.cancel()
             realtimeTranscriber = nil
+            pendingMeetingRecordingCandidate = nil
             activeCaptureMode = nil
             recordingStartedAt = nil
             lastRecordingDuration = nil
@@ -774,7 +963,11 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
 
     private func transcribeRecording(at audioFileURL: URL) async throws -> String {
         config = try configStore.load()
-        let primary = primaryTranscriptionProvider()
+        let providerOrder = transcriptionProviderOrder()
+        guard let primary = providerOrder.first else {
+            throw SpeakFlowError.transcriptionFailed("No transcription provider is configured.")
+        }
+        debugLog("Transcription provider order: \(providerOrder.joined(separator: " -> "))")
 
         do {
             let transcript = try await transcribeRecording(at: audioFileURL, using: primary)
@@ -787,7 +980,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                 self.debugLog("Primary transcription failed via \(primary): \(error.localizedDescription)")
             }
 
-            guard let backup = backupTranscriptionProvider(excluding: primary) else {
+            guard let backup = providerOrder.dropFirst().first else {
                 throw error
             }
 
@@ -807,48 +1000,78 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     }
 
     private func transcribeRecording(at audioFileURL: URL, using provider: String) async throws -> String {
-        switch provider {
-        case "elevenlabs":
-            let data = try Data(contentsOf: audioFileURL)
-            let client = ElevenLabsBatchTranscriberClient(config: config)
-            return try await client.transcribe(
-                audioData: data,
-                mimeType: audioMimeType(for: audioFileURL),
-                fileExtension: audioFileURL.pathExtension.isEmpty ? "m4a" : audioFileURL.pathExtension
-            )
-        case "openai":
-            let client = OpenAICompatibleClient(config: config)
-            return try await client.transcribe(
-                audioFileURL: audioFileURL,
-                modelOverride: openAITranscriptionFallbackModel
-            )
-        default:
-            throw SpeakFlowError.transcriptionFailed("No transcription provider is configured.")
+        let timeout = transcriptionTimeout(for: audioFileURL)
+        debugLog("Using \(Int(timeout))s timeout for \(provider) transcription")
+        return try await withTimeout(seconds: timeout, operationName: "\(provider) transcription") { [self] in
+            switch provider {
+            case "elevenlabs":
+                let data = try Data(contentsOf: audioFileURL)
+                let client = ElevenLabsBatchTranscriberClient(config: self.config)
+                return try await client.transcribe(
+                    audioData: data,
+                    mimeType: self.audioMimeType(for: audioFileURL),
+                    fileExtension: audioFileURL.pathExtension.isEmpty ? "m4a" : audioFileURL.pathExtension
+                )
+            case "openai":
+                let client = OpenAICompatibleClient(config: self.config)
+                return try await client.transcribe(
+                    audioFileURL: audioFileURL,
+                    modelOverride: openAITranscriptionFallbackModel
+                )
+            default:
+                throw SpeakFlowError.transcriptionFailed("No transcription provider is configured.")
+            }
         }
     }
 
-    private func primaryTranscriptionProvider() -> String {
-        if config.resolvedOpenAIAPIKey() != nil {
-            return "openai"
+    private func transcriptionTimeout(for audioFileURL: URL) -> TimeInterval {
+        let asset = AVURLAsset(url: audioFileURL)
+        let duration = CMTimeGetSeconds(asset.duration)
+        guard duration.isFinite, duration > 0 else {
+            return transcriptionTimeoutSeconds
         }
-        if config.resolvedElevenLabsAPIKey() != nil {
-            return "elevenlabs"
-        }
-        return "none"
+        let dynamicTimeout = duration * 1.5 + 120
+        return max(transcriptionTimeoutSeconds, min(30 * 60, dynamicTimeout))
     }
 
-    private func backupTranscriptionProvider(excluding primary: String) -> String? {
-        if primary != "elevenlabs", config.resolvedElevenLabsAPIKey() != nil {
-            return "elevenlabs"
+    private func transcriptionProviderOrder() -> [String] {
+        let hasOpenAI = config.resolvedOpenAIAPIKey() != nil
+        let hasElevenLabs = config.resolvedElevenLabsAPIKey() != nil
+        let providerName = config.providerName.lowercased()
+
+        var orderedProviders: [String] = []
+
+        if providerName.contains("openai transcription") {
+            orderedProviders.append("openai")
+            if providerName.contains("elevenlabs") {
+                orderedProviders.append("elevenlabs")
+            }
+        } else if providerName.contains("elevenlabs") {
+            orderedProviders.append("elevenlabs")
+            if providerName.contains("openai") {
+                orderedProviders.append("openai")
+            }
         }
-        if primary != "openai", config.resolvedOpenAIAPIKey() != nil {
-            return "openai"
+
+        let availableProviders = [
+            hasOpenAI ? "openai" : nil,
+            hasElevenLabs ? "elevenlabs" : nil
+        ].compactMap { $0 }
+
+        let filteredConfigured = orderedProviders.filter { availableProviders.contains($0) }
+        if !filteredConfigured.isEmpty {
+            var deduped: [String] = []
+            for provider in filteredConfigured where !deduped.contains(provider) {
+                deduped.append(provider)
+            }
+            return deduped
         }
-        return nil
+
+        return availableProviders
     }
 
     private func activeTranscriptionModelName() -> String {
-        switch primaryTranscriptionProvider() {
+        switch transcriptionProviderOrder().first {
         case "openai":
             return openAITranscriptionFallbackModel
         case "elevenlabs":
@@ -879,7 +1102,9 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             let client = OpenAICompatibleClient(config: config)
             let finalText: String
             do {
-                let cleaned = try await client.cleanup(text: rawTranscript)
+                let cleaned = try await withTimeout(seconds: cleanupTimeoutSeconds, operationName: "cleanup") {
+                    try await client.cleanup(text: rawTranscript)
+                }
                 finalText = cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? rawTranscript : cleaned
             } catch {
                 await MainActor.run {
@@ -891,6 +1116,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                 self.realtimeTranscriber = nil
                 self.recordingStartedAt = nil
                 self.lastRecordingDuration = nil
+                self.pendingMeetingRecordingCandidate = nil
                 self.activeCaptureMode = nil
                 self.textInsertionController.clearTransientState()
                 self.lastOutputText = finalText
@@ -936,13 +1162,19 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         do {
             config = try configStore.load()
             await MainActor.run {
+                let meetingCandidate = self.pendingMeetingRecordingCandidate
+                var savedCapture: CaptureRecord?
                 self.realtimeTranscriber = nil
                 self.recordingStartedAt = nil
                 self.lastRecordingDuration = nil
+                self.pendingMeetingRecordingCandidate = nil
                 self.activeCaptureMode = nil
                 self.textInsertionController.clearTransientState()
                 if let snapshot = try? self.captureStore.append(
                     kind: .recordingSession,
+                    sourceContext: meetingCandidate == nil ? "recording" : "meeting",
+                    meetingApp: meetingCandidate?.app.rawValue,
+                    meetingTitle: meetingCandidate?.title,
                     startedAt: startedAt,
                     endedAt: Date(),
                     durationSeconds: duration,
@@ -954,6 +1186,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                 ) {
                     self.captures = snapshot.0
                     self.stats = snapshot.1
+                    savedCapture = snapshot.0.first
                 }
                 self.controlCenterWindowController?.update(
                     config: self.config,
@@ -963,7 +1196,9 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                     activeCaptureMode: self.activeCaptureMode,
                     summarizingCaptureID: self.summarizingCaptureID
                 )
-                self.openControlCenter()
+                if let savedCapture {
+                    self.captureNotificationService.notifyRecordingReady(capture: savedCapture)
+                }
                 self.state = .idle
             }
         } catch {
@@ -971,6 +1206,7 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
                 self.realtimeTranscriber = nil
                 self.recordingStartedAt = nil
                 self.lastRecordingDuration = nil
+                self.pendingMeetingRecordingCandidate = nil
                 self.activeCaptureMode = nil
                 self.textInsertionController.clearTransientState()
                 self.state = .idle
@@ -986,14 +1222,15 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
             "returned an empty transcript",
             "empty transcript",
             "transcript was empty",
-            "session could not start"
+            "session could not start",
+            "timed out"
         ]
         return silentMarkers.contains { message.contains($0) }
     }
 
-    private func userFacingTranscriptionFailureMessage(for error: Error) -> String {
+    private func userFacingTranscriptionFailureMessage(for error: Error, preservedRecordingURL: URL? = nil) -> String {
         if shouldSilentlyIgnore(error: error) {
-            return error.localizedDescription
+            return appendPreservedRecordingPathIfNeeded(error.localizedDescription, preservedRecordingURL: preservedRecordingURL)
         }
 
         let message = error.localizedDescription.lowercased()
@@ -1006,10 +1243,42 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         ]
 
         if transportMarkers.contains(where: { message.contains($0) }) {
-            return "Speech recognition temporarily failed. Please try again."
+            return appendPreservedRecordingPathIfNeeded(
+                "Speech recognition temporarily failed. Please try again.",
+                preservedRecordingURL: preservedRecordingURL
+            )
         }
 
-        return error.localizedDescription
+        return appendPreservedRecordingPathIfNeeded(error.localizedDescription, preservedRecordingURL: preservedRecordingURL)
+    }
+
+    private func appendPreservedRecordingPathIfNeeded(_ message: String, preservedRecordingURL: URL?) -> String {
+        guard let preservedRecordingURL else { return message }
+        return message + "\n\nRecording was saved for retry at:\n\(preservedRecordingURL.path)"
+    }
+
+    private func preserveRecordingForRecovery(_ sourceURL: URL) -> URL? {
+        let fm = FileManager.default
+        let directory = configStore.supportDirectoryURL.appendingPathComponent("failed-recordings", isDirectory: true)
+        do {
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            let formatter = ISO8601DateFormatter()
+            let timestamp = formatter.string(from: Date())
+                .replacingOccurrences(of: ":", with: "-")
+            let ext = sourceURL.pathExtension.isEmpty ? "m4a" : sourceURL.pathExtension
+            let destination = directory
+                .appendingPathComponent("failed-\(timestamp)-\(UUID().uuidString)")
+                .appendingPathExtension(ext)
+            if fm.fileExists(atPath: destination.path) {
+                try fm.removeItem(at: destination)
+            }
+            try fm.moveItem(at: sourceURL, to: destination)
+            debugLog("Preserved failed recording at \(destination.path)")
+            return destination
+        } catch {
+            debugLog("Failed to preserve recording for recovery: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     @MainActor
@@ -1023,11 +1292,59 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     private func presentError(message: String) {
         let sanitizedMessage = message.replacingOccurrences(of: "\n", with: " | ")
         debugLog("Presenting error: \(sanitizedMessage)")
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = appDisplayName
-        alert.informativeText = message
-        alert.runModal()
+        guard !isPresentingErrorAlert else {
+            debugLog("Skipping duplicate error alert while another alert is visible")
+            return
+        }
+
+        lastPasteStatus = sanitizedMessage
+        refreshUI()
+
+        let makeAlert = {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = appDisplayName
+            alert.informativeText = message
+            return alert
+        }
+
+        if let hostWindow = (NSApp.keyWindow ?? NSApp.mainWindow ?? controlCenterWindowController?.window),
+           hostWindow.isVisible {
+            isPresentingErrorAlert = true
+            debugLog("Presenting error as sheet for window=\(hostWindow.title)")
+            let alert = makeAlert()
+            NSApp.activate(ignoringOtherApps: true)
+            alert.beginSheetModal(for: hostWindow) { [weak self] _ in
+                Task { @MainActor in
+                    self?.isPresentingErrorAlert = false
+                    self?.debugLog("Dismissed sheet error alert")
+                }
+            }
+            return
+        }
+
+        debugLog("No visible host window for sheet error alert; rendering idle UI without modal block")
+    }
+
+    private func withTimeout<T>(
+        seconds: TimeInterval,
+        operationName: String,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw SpeakFlowError.transcriptionFailed("\(operationName.capitalized) timed out.")
+            }
+
+            guard let result = try await group.next() else {
+                throw SpeakFlowError.transcriptionFailed("\(operationName.capitalized) timed out.")
+            }
+            group.cancelAll()
+            return result
+        }
     }
 }

@@ -136,6 +136,14 @@ The app prompts for both when needed. When Accessibility text insertion works, S
 
 For the most stable Accessibility trust, keep the app in a stable install location such as `/Applications/SpeakFlow.app` instead of launching a freshly rebuilt copy from a different path each time.
 
+If you rebuild the local app bundle in place, macOS may treat it as a fresh app instance. In that case you may need to:
+
+1. remove or disable the old `SpeakFlow` entry in `System Settings > Privacy & Security > Accessibility`
+2. relaunch the rebuilt app
+3. enable `SpeakFlow` again in Accessibility
+
+The same can also apply to Notifications permission after a rebuild, depending on how macOS caches trust for the local bundle.
+
 ## Practical tuning
 
 For the best English + Russian results:

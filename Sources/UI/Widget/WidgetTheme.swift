@@ -19,10 +19,13 @@ struct WidgetWaveformGeometry {
 }
 
 enum WidgetTheme {
-    static let widgetOuterSize = NSSize(width: 164, height: 40)
-    static let widgetCapsuleSize = NSSize(width: 156, height: 32)
+    static let compactWidgetOuterSize = NSSize(width: 164, height: 40)
+    static let compactWidgetCapsuleSize = NSSize(width: 156, height: 32)
+    static let meetingWidgetOuterSize = NSSize(width: 258, height: 52)
+    static let meetingWidgetCapsuleSize = NSSize(width: 250, height: 44)
 
     static let capsuleCornerRadius: CGFloat = 16
+    static let meetingCapsuleCornerRadius: CGFloat = 22
     static let borderWidth: CGFloat = 1
     static let idleAlpha: CGFloat = 0.96
     static let activeAlpha: CGFloat = 1.0
@@ -35,6 +38,8 @@ enum WidgetTheme {
     static let stopButtonCornerRadius: CGFloat = 9
     static let stopButtonSlotWidth: CGFloat = 24
     static let timerSlotWidth: CGFloat = 40
+    static let meetingButtonSize: CGFloat = 26
+    static let meetingButtonCornerRadius: CGFloat = 13
 
     static let idleGlowRestWidth: CGFloat = 56
     static let idleGlowHoverWidth: CGFloat = 62
@@ -49,6 +54,8 @@ enum WidgetTheme {
 
     static let contentHorizontalInset: CGFloat = 10
     static let contentSpacing: CGFloat = 8
+    static let meetingContentHorizontalInset: CGFloat = 22
+    static let meetingTextLeadingInset: CGFloat = 2
     static let waveformLaneHeight: CGFloat = 18
     static let waveformBarWidth: CGFloat = 2
     static let waveformBarGap: CGFloat = 2
@@ -59,6 +66,14 @@ enum WidgetTheme {
     static let stopButtonFill = NSColor.white.withAlphaComponent(0.08)
     static let stopButtonBorder = NSColor.white.withAlphaComponent(0.12)
     static let stopButtonSymbol = NSColor.white.withAlphaComponent(0.88)
+    static let meetingEyebrowFont = NSFont.systemFont(ofSize: 10, weight: .medium)
+    static let meetingTitleFont = NSFont.systemFont(ofSize: 13, weight: .semibold)
+    static let meetingEyebrowColor = NSColor(calibratedRed: 0.631, green: 0.631, blue: 0.667, alpha: 1.0)
+    static let meetingTitleColor = NSColor.white
+    static let meetingButtonFill = NSColor.white.withAlphaComponent(0.04)
+    static let meetingButtonBorder = NSColor.white.withAlphaComponent(0.12)
+    static let meetingDismissSymbol = NSColor(calibratedRed: 0.631, green: 0.631, blue: 0.667, alpha: 1.0)
+    static let meetingRecordDot = NSColor(calibratedRed: 0.957, green: 0.247, blue: 0.369, alpha: 1.0)
 
     static let dragThreshold: CGFloat = 2
 
@@ -92,9 +107,35 @@ enum WidgetTheme {
     static let activeAccent = NSColor(calibratedRed: 1.0, green: 0.165, blue: 0.373, alpha: 1.0)
     static let processingAccent = NSColor(calibratedRed: 0.0, green: 0.898, blue: 1.0, alpha: 1.0)
 
-    private static let contentInnerWidth = widgetCapsuleSize.width - (contentHorizontalInset * 2)
+    static func widgetOuterSize(for state: WidgetContentView.VisualState) -> NSSize {
+        switch state {
+        case .meetingDetected:
+            return meetingWidgetOuterSize
+        default:
+            return compactWidgetOuterSize
+        }
+    }
+
+    static func widgetCapsuleSize(for state: WidgetContentView.VisualState) -> NSSize {
+        switch state {
+        case .meetingDetected:
+            return meetingWidgetCapsuleSize
+        default:
+            return compactWidgetCapsuleSize
+        }
+    }
+
+    static func capsuleCornerRadius(for state: WidgetContentView.VisualState) -> CGFloat {
+        switch state {
+        case .meetingDetected:
+            return meetingCapsuleCornerRadius
+        default:
+            return capsuleCornerRadius
+        }
+    }
 
     static func waveformGeometry(for mode: WidgetWaveformLayoutMode) -> WidgetWaveformGeometry {
+        let contentInnerWidth = compactWidgetCapsuleSize.width - (contentHorizontalInset * 2)
         let usableWidth: CGFloat
         switch mode {
         case .dictation, .processing:
@@ -123,6 +164,8 @@ enum WidgetTheme {
             return NSColor(calibratedWhite: hovered ? 0.33 : 0.24, alpha: hovered ? 0.72 : 0.58)
         case .dictationActive, .recordingActive:
             return NSColor(calibratedWhite: 0.28, alpha: 0.72)
+        case .meetingDetected:
+            return NSColor(calibratedWhite: 0.30, alpha: 0.74)
         case .processingDictation, .processingRecording:
             return NSColor(calibratedWhite: 0.30, alpha: 0.74)
         }

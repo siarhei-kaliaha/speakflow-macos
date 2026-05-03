@@ -10,6 +10,26 @@ enum DictationState {
     case transcribing
 }
 
+enum MeetingAppKind: String, Codable {
+    case zoom
+    case teams
+
+    var displayName: String {
+        switch self {
+        case .zoom:
+            return "Zoom"
+        case .teams:
+            return "Teams"
+        }
+    }
+}
+
+struct MeetingSessionCandidate: Equatable {
+    let signature: String
+    let app: MeetingAppKind
+    let title: String
+}
+
 enum CaptureMode: String, Codable, CaseIterable {
     case dictation
     case recording

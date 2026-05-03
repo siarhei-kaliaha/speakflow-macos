@@ -77,3 +77,4 @@ codesign --force --deep --sign - "$APP_DIR" >/dev/null
 rm -rf "$ICONSET_DIR" "$MASTER_ICON_PNG"
 
 echo "Built $APP_DIR"
+echo "Note: after rebuilding this local app bundle, macOS may require re-enabling SpeakFlow in Accessibility (and sometimes Notifications)."

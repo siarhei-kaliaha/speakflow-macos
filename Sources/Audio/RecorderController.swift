@@ -12,9 +12,11 @@ final class RecorderController: NSObject, AVAudioRecorderDelegate {
 
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 44_100,
+            // Speech-first profile keeps long sessions smaller and easier to transcribe reliably.
+            AVSampleRateKey: 16_000,
             AVNumberOfChannelsKey: 1,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+            AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
+            AVEncoderBitRateKey: 32_000
         ]
 
         let recorder = try AVAudioRecorder(url: fileURL, settings: settings)

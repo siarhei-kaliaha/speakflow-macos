@@ -6,12 +6,15 @@ final class WidgetContentView: NSView {
         case idle
         case dictationActive
         case recordingActive
+        case meetingDetected
         case processingDictation
         case processingRecording
     }
 
     var onToggle: (() -> Void)?
     var onStopRecording: (() -> Void)?
+    var onDismissMeeting: (() -> Void)?
+    var onAcceptMeeting: (() -> Void)?
 
     private let idleContainer = NSView()
     private let capsuleView = NSVisualEffectView()
@@ -23,10 +26,18 @@ final class WidgetContentView: NSView {
 
     private let dictationRow = NSStackView()
     private let recordingRow = NSStackView()
+    private let meetingRow = NSStackView()
     private let processingRow = NSStackView()
 
     private let recordingStopSlot = NSView()
     private let stopButton = NSButton()
+    private let meetingTextStack = NSStackView()
+    private let meetingEyebrowLabel = NSTextField(labelWithString: "Meeting detected")
+    private let meetingTitleLabel = NSTextField(labelWithString: "Record session?")
+    private let meetingActionsStack = NSStackView()
+    private let dismissMeetingButton = NSButton()
+    private let acceptMeetingButton = NSButton()
+    private let acceptMeetingDotView = NSView()
 
     private let dictationWaveformView = WaveformStripView()
     private let recordingWaveformView = WaveformStripView()
@@ -50,10 +61,17 @@ final class WidgetContentView: NSView {
     private var idleGlowWidthConstraint: NSLayoutConstraint?
     private var idleGlowHeightConstraint: NSLayoutConstraint?
     private var idleIndicatorWidthConstraint: NSLayoutConstraint?
+    private var outerWidthConstraint: NSLayoutConstraint?
+    private var outerHeightConstraint: NSLayoutConstraint?
+    private var idleContainerWidthConstraint: NSLayoutConstraint?
+    private var idleContainerHeightConstraint: NSLayoutConstraint?
+    private var capsuleWidthConstraint: NSLayoutConstraint?
+    private var capsuleHeightConstraint: NSLayoutConstraint?
     private var currentAudioLevels: [CGFloat] = []
     private var recordingStartDate: Date?
     private var frozenDuration: TimeInterval?
     private var timerUpdateTimer: Timer?
+    private var meetingPromptAppName = "Meeting"
 
     private var dragStartMouseLocation = NSPoint.zero
     private var dragStartWindowOrigin = NSPoint.zero
@@ -186,6 +204,7 @@ final class WidgetContentView: NSView {
         capsuleView.addSubview(contentContainer)
         contentContainer.addSubview(dictationRow)
         contentContainer.addSubview(recordingRow)
+        contentContainer.addSubview(meetingRow)
         contentContainer.addSubview(processingRow)
     }
 
@@ -239,9 +258,11 @@ final class WidgetContentView: NSView {
 
         configureRowStack(dictationRow)
         configureRowStack(recordingRow)
+        configureRowStack(meetingRow)
         configureRowStack(processingRow)
 
         configureStopButton()
+        configureMeetingPrompt()
         configureTimerLabel(dictationTimerLabel)
         configureTimerLabel(recordingTimerLabel)
         configureTimerLabel(processingTimerLabel)
@@ -264,6 +285,19 @@ final class WidgetContentView: NSView {
         recordingRow.addArrangedSubview(recordingStopSlot)
         recordingRow.addArrangedSubview(recordingWaveformView)
         recordingRow.addArrangedSubview(recordingTimerLabel)
+
+        meetingTextStack.translatesAutoresizingMaskIntoConstraints = false
+        meetingTextStack.orientation = .vertical
+        meetingTextStack.alignment = .leading
+        meetingTextStack.spacing = 2
+        meetingRow.addArrangedSubview(meetingTextStack)
+        meetingRow.addArrangedSubview(NSView())
+        meetingRow.addArrangedSubview(meetingActionsStack)
+
+        meetingTextStack.addArrangedSubview(meetingEyebrowLabel)
+        meetingTextStack.addArrangedSubview(meetingTitleLabel)
+        meetingActionsStack.addArrangedSubview(dismissMeetingButton)
+        meetingActionsStack.addArrangedSubview(acceptMeetingButton)
 
         processingRow.addArrangedSubview(processingWaveformView)
         processingRow.addArrangedSubview(processingTimerLabel)
@@ -298,6 +332,59 @@ final class WidgetContentView: NSView {
         stopButton.action = #selector(handleStopButton)
     }
 
+    private func configureMeetingPrompt() {
+        meetingEyebrowLabel.translatesAutoresizingMaskIntoConstraints = false
+        meetingEyebrowLabel.font = WidgetTheme.meetingEyebrowFont
+        meetingEyebrowLabel.textColor = WidgetTheme.meetingEyebrowColor
+
+        meetingTitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        meetingTitleLabel.font = WidgetTheme.meetingTitleFont
+        meetingTitleLabel.textColor = WidgetTheme.meetingTitleColor
+
+        meetingActionsStack.translatesAutoresizingMaskIntoConstraints = false
+        meetingActionsStack.orientation = .horizontal
+        meetingActionsStack.alignment = .centerY
+        meetingActionsStack.spacing = 8
+
+        dismissMeetingButton.translatesAutoresizingMaskIntoConstraints = false
+        dismissMeetingButton.isBordered = false
+        dismissMeetingButton.bezelStyle = .regularSquare
+        dismissMeetingButton.wantsLayer = true
+        dismissMeetingButton.layer?.cornerRadius = WidgetTheme.meetingButtonCornerRadius
+        dismissMeetingButton.layer?.cornerCurve = .continuous
+        dismissMeetingButton.layer?.backgroundColor = WidgetTheme.meetingButtonFill.cgColor
+        dismissMeetingButton.layer?.borderWidth = 1
+        dismissMeetingButton.layer?.borderColor = WidgetTheme.meetingButtonBorder.cgColor
+        dismissMeetingButton.contentTintColor = WidgetTheme.meetingDismissSymbol
+        dismissMeetingButton.image = NSImage(
+            systemSymbolName: "xmark",
+            accessibilityDescription: "Dismiss meeting recording prompt"
+        )?.withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
+        dismissMeetingButton.imagePosition = .imageOnly
+        dismissMeetingButton.imageScaling = .scaleProportionallyDown
+        dismissMeetingButton.target = self
+        dismissMeetingButton.action = #selector(handleDismissMeetingButton)
+
+        acceptMeetingButton.translatesAutoresizingMaskIntoConstraints = false
+        acceptMeetingButton.isBordered = false
+        acceptMeetingButton.bezelStyle = .regularSquare
+        acceptMeetingButton.wantsLayer = true
+        acceptMeetingButton.layer?.cornerRadius = WidgetTheme.meetingButtonCornerRadius
+        acceptMeetingButton.layer?.cornerCurve = .continuous
+        acceptMeetingButton.layer?.backgroundColor = WidgetTheme.meetingButtonFill.cgColor
+        acceptMeetingButton.layer?.borderWidth = 1.5
+        acceptMeetingButton.layer?.borderColor = WidgetTheme.meetingButtonBorder.cgColor
+        acceptMeetingButton.target = self
+        acceptMeetingButton.action = #selector(handleAcceptMeetingButton)
+
+        acceptMeetingDotView.translatesAutoresizingMaskIntoConstraints = false
+        acceptMeetingDotView.wantsLayer = true
+        acceptMeetingDotView.layer?.cornerRadius = 4.5
+        acceptMeetingDotView.layer?.cornerCurve = .continuous
+        acceptMeetingDotView.layer?.backgroundColor = WidgetTheme.meetingRecordDot.cgColor
+        acceptMeetingButton.addSubview(acceptMeetingDotView)
+    }
+
     private func configureTimerLabel(_ label: NSTextField) {
         label.translatesAutoresizingMaskIntoConstraints = false
         label.font = WidgetTheme.timerFont
@@ -316,24 +403,36 @@ final class WidgetContentView: NSView {
         self.idleGlowWidthConstraint = idleGlowWidthConstraint
         self.idleGlowHeightConstraint = idleGlowHeightConstraint
         self.idleIndicatorWidthConstraint = idleIndicatorWidthConstraint
+        let outerWidthConstraint = widthAnchor.constraint(equalToConstant: WidgetTheme.widgetOuterSize(for: .idle).width)
+        let outerHeightConstraint = heightAnchor.constraint(equalToConstant: WidgetTheme.widgetOuterSize(for: .idle).height)
+        let idleContainerWidthConstraint = idleContainer.widthAnchor.constraint(equalToConstant: WidgetTheme.widgetOuterSize(for: .idle).width)
+        let idleContainerHeightConstraint = idleContainer.heightAnchor.constraint(equalToConstant: WidgetTheme.widgetOuterSize(for: .idle).height)
+        let capsuleWidthConstraint = capsuleView.widthAnchor.constraint(equalToConstant: WidgetTheme.widgetCapsuleSize(for: .idle).width)
+        let capsuleHeightConstraint = capsuleView.heightAnchor.constraint(equalToConstant: WidgetTheme.widgetCapsuleSize(for: .idle).height)
+        self.outerWidthConstraint = outerWidthConstraint
+        self.outerHeightConstraint = outerHeightConstraint
+        self.idleContainerWidthConstraint = idleContainerWidthConstraint
+        self.idleContainerHeightConstraint = idleContainerHeightConstraint
+        self.capsuleWidthConstraint = capsuleWidthConstraint
+        self.capsuleHeightConstraint = capsuleHeightConstraint
 
         let dictationGeometry = WidgetTheme.waveformGeometry(for: .dictation)
         let recordingGeometry = WidgetTheme.waveformGeometry(for: .recording)
         let processingGeometry = WidgetTheme.waveformGeometry(for: .processing)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: WidgetTheme.widgetOuterSize.width),
-            heightAnchor.constraint(equalToConstant: WidgetTheme.widgetOuterSize.height),
+            outerWidthConstraint,
+            outerHeightConstraint,
 
             idleContainer.centerXAnchor.constraint(equalTo: centerXAnchor),
             idleContainer.centerYAnchor.constraint(equalTo: centerYAnchor),
-            idleContainer.widthAnchor.constraint(equalToConstant: WidgetTheme.widgetOuterSize.width),
-            idleContainer.heightAnchor.constraint(equalToConstant: WidgetTheme.widgetOuterSize.height),
+            idleContainerWidthConstraint,
+            idleContainerHeightConstraint,
 
             capsuleView.centerXAnchor.constraint(equalTo: centerXAnchor),
             capsuleView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            capsuleView.widthAnchor.constraint(equalToConstant: WidgetTheme.widgetCapsuleSize.width),
-            capsuleView.heightAnchor.constraint(equalToConstant: WidgetTheme.widgetCapsuleSize.height),
+            capsuleWidthConstraint,
+            capsuleHeightConstraint,
 
             borderView.leadingAnchor.constraint(equalTo: capsuleView.leadingAnchor),
             borderView.trailingAnchor.constraint(equalTo: capsuleView.trailingAnchor),
@@ -368,6 +467,10 @@ final class WidgetContentView: NSView {
             recordingRow.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -WidgetTheme.contentHorizontalInset),
             recordingRow.centerYAnchor.constraint(equalTo: contentContainer.centerYAnchor),
 
+            meetingRow.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: WidgetTheme.meetingContentHorizontalInset),
+            meetingRow.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -WidgetTheme.meetingContentHorizontalInset),
+            meetingRow.centerYAnchor.constraint(equalTo: contentContainer.centerYAnchor),
+
             processingRow.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor, constant: WidgetTheme.contentHorizontalInset),
             processingRow.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -WidgetTheme.contentHorizontalInset),
             processingRow.centerYAnchor.constraint(equalTo: contentContainer.centerYAnchor),
@@ -386,6 +489,15 @@ final class WidgetContentView: NSView {
             recordingWaveformView.heightAnchor.constraint(equalToConstant: recordingGeometry.height),
             recordingTimerLabel.widthAnchor.constraint(equalToConstant: WidgetTheme.timerSlotWidth),
 
+            dismissMeetingButton.widthAnchor.constraint(equalToConstant: WidgetTheme.meetingButtonSize),
+            dismissMeetingButton.heightAnchor.constraint(equalToConstant: WidgetTheme.meetingButtonSize),
+            acceptMeetingButton.widthAnchor.constraint(equalToConstant: WidgetTheme.meetingButtonSize),
+            acceptMeetingButton.heightAnchor.constraint(equalToConstant: WidgetTheme.meetingButtonSize),
+            acceptMeetingDotView.centerXAnchor.constraint(equalTo: acceptMeetingButton.centerXAnchor),
+            acceptMeetingDotView.centerYAnchor.constraint(equalTo: acceptMeetingButton.centerYAnchor),
+            acceptMeetingDotView.widthAnchor.constraint(equalToConstant: 9),
+            acceptMeetingDotView.heightAnchor.constraint(equalToConstant: 9),
+
             processingWaveformView.widthAnchor.constraint(equalToConstant: processingGeometry.width),
             processingWaveformView.heightAnchor.constraint(equalToConstant: processingGeometry.height),
             processingTimerLabel.widthAnchor.constraint(equalToConstant: WidgetTheme.timerSlotWidth)
@@ -395,7 +507,10 @@ final class WidgetContentView: NSView {
     private func renderVisualState() {
         dictationRow.isHidden = true
         recordingRow.isHidden = true
+        meetingRow.isHidden = true
         processingRow.isHidden = true
+        stopMeetingPulseAnimation()
+        updateSize(for: visualState)
 
         switch visualState {
         case .idle:
@@ -424,6 +539,14 @@ final class WidgetContentView: NSView {
             animationController.stop()
             applyContentAppearance(accent: WidgetTheme.activeAccent, state: .recordingActive)
             recordingWaveformView.apply(levels: currentAudioLevels, animated: false)
+        case .meetingDetected:
+            idleContainer.isHidden = true
+            capsuleView.isHidden = false
+            meetingRow.isHidden = false
+            stopTimerUpdates()
+            animationController.stop()
+            applyContentAppearance(accent: WidgetTheme.activeAccent, state: .meetingDetected)
+            startMeetingPulseAnimation()
         case .processingDictation, .processingRecording:
             idleContainer.isHidden = true
             capsuleView.isHidden = false
@@ -450,9 +573,24 @@ final class WidgetContentView: NSView {
         borderView.layer?.borderColor = WidgetTheme.borderColor(for: state, hovered: false).cgColor
         let isProcessing = state == .processingDictation || state == .processingRecording
         capsuleView.animator().alphaValue = isProcessing ? WidgetTheme.processingAlpha : WidgetTheme.activeAlpha
+        capsuleView.layer?.cornerRadius = WidgetTheme.capsuleCornerRadius(for: state)
+        borderView.layer?.cornerRadius = WidgetTheme.capsuleCornerRadius(for: state)
+        capsuleBackgroundLayer.cornerRadius = WidgetTheme.capsuleCornerRadius(for: state)
+        topSheenLayer.cornerRadius = WidgetTheme.capsuleCornerRadius(for: state)
         dictationWaveformView.setAccentColor(accent)
         recordingWaveformView.setAccentColor(accent)
         processingWaveformView.setAccentColor(accent)
+    }
+
+    private func updateSize(for state: VisualState) {
+        let outerSize = WidgetTheme.widgetOuterSize(for: state)
+        let capsuleSize = WidgetTheme.widgetCapsuleSize(for: state)
+        outerWidthConstraint?.constant = outerSize.width
+        outerHeightConstraint?.constant = outerSize.height
+        idleContainerWidthConstraint?.constant = outerSize.width
+        idleContainerHeightConstraint?.constant = outerSize.height
+        capsuleWidthConstraint?.constant = capsuleSize.width
+        capsuleHeightConstraint?.constant = capsuleSize.height
     }
 
     private func startTimerUpdates() {
@@ -523,12 +661,47 @@ final class WidgetContentView: NSView {
     override func mouseUp(with event: NSEvent) {
         guard window != nil else { return }
         guard !didDrag else { return }
+        guard visualState != .meetingDetected else { return }
         onToggle?()
     }
 
     @objc
     private func handleStopButton() {
         onStopRecording?()
+    }
+
+    func updateMeetingPrompt(appName: String) {
+        meetingPromptAppName = appName
+        dismissMeetingButton.toolTip = "Dismiss \(appName) meeting suggestion"
+        acceptMeetingButton.toolTip = "Record \(appName) session"
+    }
+
+    @objc
+    private func handleDismissMeetingButton() {
+        onDismissMeeting?()
+    }
+
+    @objc
+    private func handleAcceptMeetingButton() {
+        onAcceptMeeting?()
+    }
+
+    private func startMeetingPulseAnimation() {
+        guard let layer = acceptMeetingDotView.layer else { return }
+        if layer.animation(forKey: "meetingPulseOpacity") != nil {
+            return
+        }
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.fromValue = 0.4
+        animation.toValue = 1.0
+        animation.duration = 0.75
+        animation.autoreverses = true
+        animation.repeatCount = .infinity
+        layer.add(animation, forKey: "meetingPulseOpacity")
+    }
+
+    private func stopMeetingPulseAnimation() {
+        acceptMeetingDotView.layer?.removeAnimation(forKey: "meetingPulseOpacity")
     }
 }
 

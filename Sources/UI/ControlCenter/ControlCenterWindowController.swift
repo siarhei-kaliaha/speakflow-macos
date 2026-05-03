@@ -99,6 +99,19 @@ final class ControlCenterWindowController: NSWindowController {
         window?.makeKeyAndOrderFront(nil)
     }
 
+    func present(page: WorkspacePage, selectedRecordingCaptureID: UUID? = nil) {
+        store.selectedPage = page
+        if page != .dictation {
+            store.selectedDictationCaptureID = nil
+        }
+        if page == .recordings {
+            store.selectedRecordingCaptureID = selectedRecordingCaptureID
+        } else {
+            store.selectedRecordingCaptureID = nil
+        }
+        presentAsPrimaryWorkspaceWindow()
+    }
+
     private func setupUI() {
         guard let window else { return }
         let rootView = ControlCenterWorkspaceView(
@@ -626,10 +639,23 @@ private struct RecordingDetailView: View {
                     .frame(maxWidth: 800, alignment: .leading)
             }
 
-            documentPane(title: "Summary", button: AnyView(SecondaryButton(title: isSummarizing ? "Summarizing…" : "Generate Summary") {
-                guard !isSummarizing else { return }
-                onSummarize()
-            })) {
+            documentPane(
+                title: "Summary",
+                button: AnyView(
+                    HStack(spacing: 10) {
+                        SecondaryButton(title: isSummarizing ? "Summarizing…" : "Generate Summary") {
+                            guard !isSummarizing else { return }
+                            onSummarize()
+                        }
+                        let summaryText = normalizedSummaryText(capture)
+                        SecondaryButton(title: "Copy Summary") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(summaryText, forType: .string)
+                        }
+                        .disabled(summaryText.isEmpty)
+                    }
+                )
+            ) {
                 Text(summaryBodyText(capture))
                     .font(.system(size: 15))
                     .lineSpacing(6)
@@ -652,11 +678,15 @@ private struct RecordingDetailView: View {
     }
 
     private func summaryBodyText(_ capture: CaptureRecord) -> String {
-        let trimmed = capture.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let trimmed = normalizedSummaryText(capture)
         if trimmed.isEmpty {
             return "No summary has been generated for this session yet. Click the button above to generate one using GPT-4o."
         }
         return trimmed
+    }
+
+    private func normalizedSummaryText(_ capture: CaptureRecord) -> String {
+        capture.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
     private func documentPane(title: String, button: AnyView, @ViewBuilder content: () -> some View) -> some View {

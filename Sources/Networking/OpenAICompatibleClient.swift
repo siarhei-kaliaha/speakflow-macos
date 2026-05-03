@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 struct ChatCompletionRequest: Encodable {
     struct Message: Encodable {
@@ -71,6 +72,9 @@ struct OpenAICompatibleClient {
     let config: AppConfig
     let session: NetworkSession
     let environment: [String: String]
+    private let singleUploadSoftLimitBytes = 22 * 1024 * 1024
+    private let chunkDurationSeconds: Double = 8 * 60
+    private let chunkStagingDirectoryURL: URL
 
     init(
         config: AppConfig,
@@ -80,6 +84,10 @@ struct OpenAICompatibleClient {
         self.config = config
         self.session = session
         self.environment = environment
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        self.chunkStagingDirectoryURL = appSupport
+            .appendingPathComponent(appDisplayName, isDirectory: true)
+            .appendingPathComponent("transcription-chunks", isDirectory: true)
     }
 
     private func endpointURL(_ suffix: String) throws -> URL {
@@ -102,13 +110,28 @@ struct OpenAICompatibleClient {
     }
 
     func transcribe(audioFileURL: URL, modelOverride: String? = nil) async throws -> String {
-        let data = try Data(contentsOf: audioFileURL)
-        return try await transcribe(
-            audioData: data,
-            mimeType: "audio/m4a",
-            fileExtension: audioFileURL.pathExtension.isEmpty ? "m4a" : audioFileURL.pathExtension,
-            modelOverride: modelOverride
-        )
+        let fileExtension = audioFileURL.pathExtension.isEmpty ? "m4a" : audioFileURL.pathExtension.lowercased()
+        let mimeType = mimeType(for: fileExtension)
+        let fileSizeBytes = (try? audioFileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+
+        if fileSizeBytes > singleUploadSoftLimitBytes {
+            return try await transcribeInChunks(audioFileURL: audioFileURL, modelOverride: modelOverride)
+        }
+
+        do {
+            let data = try Data(contentsOf: audioFileURL)
+            return try await transcribe(
+                audioData: data,
+                mimeType: mimeType,
+                fileExtension: fileExtension,
+                modelOverride: modelOverride
+            )
+        } catch {
+            if shouldRetryTranscriptionByChunking(error: error) {
+                return try await transcribeInChunks(audioFileURL: audioFileURL, modelOverride: modelOverride)
+            }
+            throw error
+        }
     }
 
     func transcribe(
@@ -223,6 +246,132 @@ Use plain text only with short paragraphs or short bullet-like lines.
             return candidate
         }
         return openAITranscriptionFallbackModel
+    }
+
+    private func mimeType(for fileExtension: String) -> String {
+        switch fileExtension.lowercased() {
+        case "m4a", "mp4":
+            return "audio/mp4"
+        case "mp3":
+            return "audio/mpeg"
+        case "wav":
+            return "audio/wav"
+        case "ogg":
+            return "audio/ogg"
+        case "webm":
+            return "audio/webm"
+        default:
+            return "application/octet-stream"
+        }
+    }
+
+    private func shouldRetryTranscriptionByChunking(error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        let markers = [
+            "http 400",
+            "invalid_request_error",
+            "invalid_value",
+            "audio file might be corrupted or unsupported",
+            "maximum content size",
+            "size limit",
+            "too large",
+            "file exceeds"
+        ]
+        return markers.contains { message.contains($0) }
+    }
+
+    private func transcribeInChunks(audioFileURL: URL, modelOverride: String?) async throws -> String {
+        let asset = AVURLAsset(url: audioFileURL)
+        let durationSeconds = CMTimeGetSeconds(asset.duration)
+        guard durationSeconds.isFinite, durationSeconds > 0 else {
+            throw SpeakFlowError.transcriptionFailed("Could not determine audio duration for chunked transcription.")
+        }
+
+        try FileManager.default.createDirectory(at: chunkStagingDirectoryURL, withIntermediateDirectories: true)
+        let sessionID = UUID().uuidString
+        var cursor: Double = 0
+        var index = 0
+        var transcripts: [String] = []
+        var chunkURLs: [URL] = []
+
+        while cursor < durationSeconds {
+            let segmentDuration = min(chunkDurationSeconds, durationSeconds - cursor)
+            let chunkURL = chunkStagingDirectoryURL
+                .appendingPathComponent("session-\(sessionID)-chunk-\(index + 1)")
+                .appendingPathExtension("m4a")
+            chunkURLs.append(chunkURL)
+
+            do {
+                try await exportChunk(asset: asset, startSeconds: cursor, durationSeconds: segmentDuration, outputURL: chunkURL)
+                let chunkData = try Data(contentsOf: chunkURL)
+                let chunkTranscript = try await transcribe(
+                    audioData: chunkData,
+                    mimeType: "audio/mp4",
+                    fileExtension: "m4a",
+                    modelOverride: modelOverride
+                )
+                let trimmed = chunkTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    transcripts.append(trimmed)
+                }
+            } catch {
+                throw SpeakFlowError.transcriptionFailed(
+                    "Chunk \(index + 1) transcription failed: \(error.localizedDescription)\n" +
+                    "Chunks were preserved in \(chunkStagingDirectoryURL.path)."
+                )
+            }
+
+            cursor += segmentDuration
+            index += 1
+        }
+
+        let combined = transcripts.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if combined.isEmpty {
+            throw SpeakFlowError.transcriptionFailed("Chunked transcription returned an empty result.")
+        }
+
+        for chunkURL in chunkURLs {
+            try? FileManager.default.removeItem(at: chunkURL)
+        }
+        return combined
+    }
+
+    private func exportChunk(
+        asset: AVURLAsset,
+        startSeconds: Double,
+        durationSeconds: Double,
+        outputURL: URL
+    ) async throws {
+        try? FileManager.default.removeItem(at: outputURL)
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+            throw SpeakFlowError.transcriptionFailed("Could not create export session for chunked transcription.")
+        }
+
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .m4a
+        exportSession.shouldOptimizeForNetworkUse = true
+        exportSession.timeRange = CMTimeRange(
+            start: CMTime(seconds: startSeconds, preferredTimescale: 600),
+            duration: CMTime(seconds: durationSeconds, preferredTimescale: 600)
+        )
+
+        try await withCheckedThrowingContinuation { continuation in
+            exportSession.exportAsynchronously {
+                switch exportSession.status {
+                case .completed:
+                    continuation.resume()
+                case .failed:
+                    let message = exportSession.error?.localizedDescription ?? "Unknown export error."
+                    continuation.resume(throwing: SpeakFlowError.transcriptionFailed("Audio chunk export failed: \(message)"))
+                case .cancelled:
+                    continuation.resume(throwing: SpeakFlowError.transcriptionFailed("Audio chunk export was cancelled."))
+                default:
+                    let message = exportSession.error?.localizedDescription ?? "Chunk export did not complete."
+                    continuation.resume(throwing: SpeakFlowError.transcriptionFailed("Audio chunk export failed: \(message)"))
+                }
+            }
+        }
     }
 
     private func validateHTTPResponse(

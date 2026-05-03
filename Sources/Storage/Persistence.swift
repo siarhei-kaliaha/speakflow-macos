@@ -59,6 +59,9 @@ final class ConfigStore {
 struct CaptureRecord: Codable, Equatable, Identifiable {
     let id: UUID
     let kind: CaptureKind
+    let sourceContext: String?
+    let meetingApp: String?
+    let meetingTitle: String?
     let startedAt: Date
     let endedAt: Date
     let durationSeconds: TimeInterval
@@ -183,6 +186,9 @@ final class CaptureStore {
                 CaptureRecord(
                     id: $0.id,
                     kind: .dictationSnippet,
+                    sourceContext: nil,
+                    meetingApp: nil,
+                    meetingTitle: nil,
                     startedAt: $0.createdAt,
                     endedAt: $0.createdAt,
                     durationSeconds: 0,
@@ -211,6 +217,9 @@ final class CaptureStore {
 
     func append(
         kind: CaptureKind,
+        sourceContext: String? = nil,
+        meetingApp: String? = nil,
+        meetingTitle: String? = nil,
         startedAt: Date,
         endedAt: Date,
         durationSeconds: TimeInterval,
@@ -229,6 +238,9 @@ final class CaptureStore {
         let record = CaptureRecord(
             id: UUID(),
             kind: kind,
+            sourceContext: sourceContext,
+            meetingApp: meetingApp,
+            meetingTitle: meetingTitle,
             startedAt: startedAt,
             endedAt: endedAt,
             durationSeconds: durationSeconds,

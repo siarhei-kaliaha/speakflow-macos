@@ -28,7 +28,7 @@ final class TextInsertionController {
     }
 
     func requestPlatformPermissionsIfNeeded() {
-        _ = PlatformPermissions.accessibility(prompt: false)
+        _ = PlatformPermissions.accessibility(prompt: true)
         _ = PlatformPermissions.listenEvent(prompt: false)
         _ = PlatformPermissions.postEvent(prompt: false)
     }
@@ -37,6 +37,11 @@ final class TextInsertionController {
         let currentAppPID = ProcessInfo.processInfo.processIdentifier
         let frontmost = NSWorkspace.shared.frontmostApplication
         targetApplication = frontmost?.processIdentifier == currentAppPID ? nil : frontmost
+        if let app = targetApplication {
+            debugLog("Captured target application: \(app.localizedName ?? "unknown") pid=\(app.processIdentifier)")
+        } else {
+            debugLog("No external target application captured; will rely on focused system element")
+        }
     }
 
     func updateTriggerLocation(_ point: NSPoint) {
@@ -50,7 +55,13 @@ final class TextInsertionController {
     }
 
     func prepareForRecording(preferAccessibilityInsertion: Bool) {
-        capturedInsertionTarget = preferAccessibilityInsertion ? captureInsertionTarget() : nil
+        if !preferAccessibilityInsertion {
+            capturedInsertionTarget = nil
+            debugLog("Live insertion disabled by config")
+            return
+        }
+        capturedInsertionTarget = captureInsertionTarget()
+        debugLog("Prepared live insertion target available=\(capturedInsertionTarget != nil)")
     }
 
     func scheduleLiveInsertion(
@@ -60,6 +71,7 @@ final class TextInsertionController {
         statusHandler: @escaping (String) -> Void
     ) {
         guard isRecording, preferAccessibilityInsertion else {
+            debugLog("Skipping live insertion isRecording=\(isRecording) preferAccessibilityInsertion=\(preferAccessibilityInsertion)")
             return
         }
 
@@ -68,11 +80,19 @@ final class TextInsertionController {
             return
         }
 
+        if capturedInsertionTarget == nil {
+            capturedInsertionTarget = captureInsertionTarget()
+            debugLog("Live insertion target reacquire attempted success=\(capturedInsertionTarget != nil)")
+        }
+
         pendingLiveInsertion?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             if self.renderCapturedInsertion(trimmed) {
                 statusHandler("Live insertion via Accessibility")
+                self.debugLog("Live insertion applied textLength=\((trimmed as NSString).length)")
+            } else {
+                self.debugLog("Live insertion failed for textLength=\((trimmed as NSString).length)")
             }
         }
         pendingLiveInsertion = workItem
@@ -174,6 +194,7 @@ final class TextInsertionController {
         guard PlatformPermissions.accessibility(prompt: false),
               let focusedElement = bestCandidateTextElement()
         else {
+            debugLog("Capture insertion target failed: accessibility missing or no writable focused element")
             return nil
         }
 
@@ -181,15 +202,18 @@ final class TextInsertionController {
         guard AXUIElementGetPid(focusedElement, &pid) == .success,
               let currentValue = copyStringAttribute(kAXValueAttribute, from: focusedElement)
         else {
+            debugLog("Capture insertion target failed: unable to read AX value")
             return nil
         }
 
         let currentNSString = currentValue as NSString
         let selectedRange = copySelectedRange(from: focusedElement) ?? CFRange(location: currentNSString.length, length: 0)
         guard validatedRange(selectedRange, in: currentNSString) != nil else {
+            debugLog("Capture insertion target failed: invalid selected range")
             return nil
         }
 
+        debugLog("Captured insertion target pid=\(pid) textLength=\(currentNSString.length) range={\(selectedRange.location),\(selectedRange.length)}")
         return CapturedInsertionTarget(
             element: focusedElement,
             pid: pid,
@@ -201,11 +225,13 @@ final class TextInsertionController {
 
     private func renderCapturedInsertion(_ text: String) -> Bool {
         guard var target = capturedInsertionTarget else {
+            debugLog("Render live insertion skipped: no captured target")
             return false
         }
 
         let originalNSString = target.originalValue as NSString
         guard let selectedRange = validatedRange(target.originalRange, in: originalNSString) else {
+            debugLog("Render live insertion failed: target range is no longer valid")
             return false
         }
 
@@ -215,6 +241,7 @@ final class TextInsertionController {
         )
         let setValueResult = AXUIElementSetAttributeValue(target.element, kAXValueAttribute as CFString, replacement as CFTypeRef)
         guard setValueResult == .success else {
+            debugLog("Render live insertion failed: AX value set result=\(setValueResult.rawValue)")
             return false
         }
 

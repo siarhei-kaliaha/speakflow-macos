@@ -29,10 +29,13 @@ final class HotkeyMonitor {
     private var holdKeyIsDown = false
     private var holdKeyUsedWithAnotherKey = false
     private var suppressNextHoldRelease = false
+    private var useFnListenerForRightModifiers = false
 
     func register(binding: HotkeyBinding, isCapturingHotkey: Bool) {
         onDebugLog?("Registering hotkey listeners for binding=\(binding.rawValue)")
         unregister()
+        let canUseGlobalEventMonitors = PlatformPermissions.listenEvent(prompt: false)
+        useFnListenerForRightModifiers = !canUseGlobalEventMonitors && (binding == .rightCommand || binding == .rightControl)
 
         localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged]) { [weak self] event in
             self?.handleFlagsChanged(event, binding: binding, isCapturingHotkey: isCapturingHotkey)
@@ -44,7 +47,7 @@ final class HotkeyMonitor {
             return event
         }
 
-        if PlatformPermissions.listenEvent(prompt: false) {
+        if canUseGlobalEventMonitors {
             globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged]) { [weak self] event in
                 self?.handleFlagsChanged(event, binding: binding, isCapturingHotkey: isCapturingHotkey)
             }
@@ -143,6 +146,11 @@ final class HotkeyMonitor {
     private func startFnListener(binding: HotkeyBinding, isCapturingHotkey: Bool) {
         stopFnListener()
 
+        guard binding == .fn || useFnListenerForRightModifiers || isCapturingHotkey else {
+            onDebugLog?("Fn listener not needed for binding=\(binding.rawValue)")
+            return
+        }
+
         let listenerURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/SpeakFlowFnListener")
         guard FileManager.default.isExecutableFile(atPath: listenerURL.path) else {
             onDebugLog?("Fn listener missing at \(listenerURL.path)")
@@ -214,9 +222,11 @@ final class HotkeyMonitor {
         let isDown: Bool
         switch binding {
         case .rightCommand:
+            guard !useFnListenerForRightModifiers else { return }
             guard event.keyCode == UInt16(kVK_RightCommand) else { return }
             isDown = event.modifierFlags.contains(.command)
         case .rightControl:
+            guard !useFnListenerForRightModifiers else { return }
             guard event.keyCode == UInt16(kVK_RightControl) else { return }
             isDown = event.modifierFlags.contains(.control)
         default:
@@ -244,6 +254,10 @@ final class HotkeyMonitor {
             default:
                 break
             }
+        }
+
+        if (message.hasPrefix("RIGHT_MOD_DOWN:") || message.hasPrefix("RIGHT_MOD_UP:")) && !useFnListenerForRightModifiers {
+            return
         }
 
         switch message {

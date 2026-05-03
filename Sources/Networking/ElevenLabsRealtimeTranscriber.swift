@@ -3,6 +3,7 @@ import Foundation
 final class ElevenLabsRealtimeTranscriber {
     var onTranscriptChanged: ((String) -> Void)?
     var onAudioLevelsChanged: (([CGFloat]) -> Void)?
+    var onDebugLog: ((String) -> Void)?
 
     private let config: AppConfig
     private let sampleRate = 16_000.0
@@ -26,6 +27,12 @@ final class ElevenLabsRealtimeTranscriber {
     private var lastCommittedAt: Date?
     private var lastPartialAt: Date?
     private var closed = false
+    private var seenMessageTypes: Set<String> = []
+    private var sentAudioChunkCount = 0
+    private var receivedMessageCount = 0
+    private var loggedInvalidRealtimeJSON = false
+    private var loggedMissingPCMChannelData = false
+    private var handshakeTimeoutWorkItem: DispatchWorkItem?
 
     init(config: AppConfig) {
         self.config = config
@@ -51,14 +58,35 @@ final class ElevenLabsRealtimeTranscriber {
             self.capturedPCMData.removeAll(keepingCapacity: true)
             self.committedTranscript = ""
             self.partialTranscript = ""
+            self.sentAudioChunkCount = 0
+            self.receivedMessageCount = 0
+            self.loggedInvalidRealtimeJSON = false
+            self.loggedMissingPCMChannelData = false
+            self.seenMessageTypes.removeAll(keepingCapacity: true)
         }
+        handshakeTimeoutWorkItem?.cancel()
         task.resume()
         receiveNextMessage()
         try startAudioEngine()
+        onDebugLog?("Realtime websocket requested model=\(config.elevenLabsRealtimeModel)")
+        let handshakeCheck = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.stateQueue.async {
+                guard !self.sessionStarted, !self.closed else { return }
+                let sent = self.sentAudioChunkCount
+                DispatchQueue.main.async {
+                    self.onDebugLog?(
+                        "Realtime session_started not received after 3s (chunksSent=\(sent)). " +
+                        "Possible handshake/auth/network restriction. See: https://help.elevenlabs.io/hc/en-us/articles/22497891312401-Do-you-restrict-access-to-the-service-and-platform-for-any-specific-countries"
+                    )
+                }
+            }
+        }
+        handshakeTimeoutWorkItem = handshakeCheck
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: handshakeCheck)
     }
 
     func finish() async throws -> String {
-        try await waitForSessionStartIfNeeded()
         try await Task.sleep(nanoseconds: 180_000_000)
         stopAudioEngine()
         try sendFinalizationFrame()
@@ -104,7 +132,7 @@ final class ElevenLabsRealtimeTranscriber {
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
-        guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: true),
+        guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: sampleRate, channels: 1, interleaved: false),
               let converter = AVAudioConverter(from: inputFormat, to: outputFormat)
         else {
             throw SpeakFlowError.unableToCaptureAudio
@@ -166,9 +194,20 @@ final class ElevenLabsRealtimeTranscriber {
         }
 
         guard status == .haveData || status == .inputRanDry,
-              convertedBuffer.frameLength > 0,
-              let channelData = convertedBuffer.int16ChannelData
+              convertedBuffer.frameLength > 0
         else {
+            return
+        }
+
+        guard let channelData = convertedBuffer.int16ChannelData else {
+            stateQueue.async {
+                if !self.loggedMissingPCMChannelData {
+                    self.loggedMissingPCMChannelData = true
+                    DispatchQueue.main.async {
+                        self.onDebugLog?("Realtime conversion produced no int16 channel data; stream audio frames are skipped")
+                    }
+                }
+            }
             return
         }
 
@@ -176,10 +215,14 @@ final class ElevenLabsRealtimeTranscriber {
         let data = Data(bytes: channelData[0], count: byteCount)
         stateQueue.async {
             self.capturedPCMData.append(data)
-            if self.sessionStarted {
-                self.sendAudioFrame(data: data, commit: false)
-            } else {
-                self.pendingChunks.append(data)
+            self.sendAudioFrame(data: data, commit: false)
+            self.sentAudioChunkCount += 1
+            if self.sentAudioChunkCount == 1 || self.sentAudioChunkCount % 20 == 0 {
+                let chunks = self.sentAudioChunkCount
+                let bytes = data.count
+                DispatchQueue.main.async {
+                    self.onDebugLog?("Realtime audio chunk sent #\(chunks) bytes=\(bytes)")
+                }
             }
         }
     }
@@ -277,6 +320,9 @@ final class ElevenLabsRealtimeTranscriber {
                         if self.closed {
                             return
                         }
+                        DispatchQueue.main.async {
+                            self.onDebugLog?("Realtime send failed: \(error.localizedDescription)")
+                        }
                         self.pendingError = SpeakFlowError.transcriptionFailed("ElevenLabs send failed: \(error.localizedDescription)")
                     }
                 }
@@ -298,10 +344,21 @@ final class ElevenLabsRealtimeTranscriber {
             case .failure(let error):
                 self.stateQueue.async {
                     if !self.closed {
+                        DispatchQueue.main.async {
+                            self.onDebugLog?("Realtime receive failed: \(error.localizedDescription)")
+                        }
                         self.pendingError = SpeakFlowError.transcriptionFailed("ElevenLabs receive failed: \(error.localizedDescription)")
                     }
                 }
             case .success(let message):
+                self.stateQueue.async {
+                    self.receivedMessageCount += 1
+                    if self.receivedMessageCount == 1 {
+                        DispatchQueue.main.async {
+                            self.onDebugLog?("Realtime first websocket message received")
+                        }
+                    }
+                }
                 let text: String
                 switch message {
                 case .string(let value):
@@ -321,60 +378,81 @@ final class ElevenLabsRealtimeTranscriber {
     private func handleIncomingMessage(_ text: String) {
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data, options: []),
-              let dict = json as? [String: Any],
-              let type = dict["message_type"] as? String
+              let dict = json as? [String: Any]
         else {
+            stateQueue.async {
+                guard !self.loggedInvalidRealtimeJSON else { return }
+                self.loggedInvalidRealtimeJSON = true
+                let preview = String(text.prefix(220)).replacingOccurrences(of: "\n", with: " ")
+                DispatchQueue.main.async {
+                    self.onDebugLog?("Realtime non-JSON message received preview=\(preview)")
+                }
+            }
             return
         }
 
+        let type = ((dict["message_type"] as? String) ?? (dict["type"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
         switch type {
-        case "session_started":
+        case "session_started", "session_start", "ready", "connected":
             stateQueue.async {
                 self.sessionStarted = true
-                let buffered = self.pendingChunks
                 self.pendingChunks.removeAll(keepingCapacity: true)
-                self.sendQueue.async {
-                    for chunk in buffered {
-                        self.sendAudioFrame(data: chunk, commit: false)
-                    }
-                }
-            }
-        case "partial_transcript":
-            let partial = (dict["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !partial.isEmpty else { return }
-            stateQueue.async {
-                self.partialTranscript = partial
-                self.lastPartialAt = Date()
-                let snapshot = self.liveTranscriptSnapshot()
+                self.handshakeTimeoutWorkItem?.cancel()
                 DispatchQueue.main.async {
-                    self.onTranscriptChanged?(snapshot)
-                }
-            }
-        case "committed_transcript", "committed_transcript_with_timestamps":
-            let segment = (dict["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !segment.isEmpty else { return }
-            stateQueue.async {
-                self.partialTranscript = ""
-                if self.committedTranscript.isEmpty {
-                    self.committedTranscript = segment
-                } else if segment.hasPrefix(self.committedTranscript) {
-                    self.committedTranscript = segment
-                } else if !self.committedTranscript.hasPrefix(segment) {
-                    self.committedTranscript += " " + segment
-                }
-                self.lastCommittedAt = Date()
-                let snapshot = self.liveTranscriptSnapshot()
-                DispatchQueue.main.async {
-                    self.onTranscriptChanged?(snapshot)
+                    self.onDebugLog?("Realtime message type=\(type) session ready")
                 }
             }
         case "error":
-            let message = (dict["error"] as? String) ?? (dict["message"] as? String) ?? "Unknown ElevenLabs realtime error."
+            let errorMessage = Self.extractError(from: dict) ?? "Unknown ElevenLabs realtime error."
             stateQueue.async {
-                self.pendingError = SpeakFlowError.transcriptionFailed(message)
+                self.pendingError = SpeakFlowError.transcriptionFailed(errorMessage)
+                DispatchQueue.main.async {
+                    self.onDebugLog?("Realtime error message=\(errorMessage)")
+                }
             }
         default:
-            break
+            if let transcriptText = Self.extractTranscriptText(from: dict), !transcriptText.isEmpty {
+                if Self.isFinalTranscriptMessage(type: type, payload: dict) {
+                    stateQueue.async {
+                        self.partialTranscript = ""
+                        if self.committedTranscript.isEmpty {
+                            self.committedTranscript = transcriptText
+                        } else if transcriptText.hasPrefix(self.committedTranscript) {
+                            self.committedTranscript = transcriptText
+                        } else if !self.committedTranscript.hasPrefix(transcriptText) {
+                            self.committedTranscript += " " + transcriptText
+                        }
+                        self.lastCommittedAt = Date()
+                        let snapshot = self.liveTranscriptSnapshot()
+                        DispatchQueue.main.async {
+                            self.onDebugLog?("Realtime final transcript len=\((snapshot as NSString).length)")
+                            self.onTranscriptChanged?(snapshot)
+                        }
+                    }
+                } else {
+                    stateQueue.async {
+                        self.partialTranscript = transcriptText
+                        self.lastPartialAt = Date()
+                        let snapshot = self.liveTranscriptSnapshot()
+                        DispatchQueue.main.async {
+                            self.onDebugLog?("Realtime partial transcript len=\((snapshot as NSString).length)")
+                            self.onTranscriptChanged?(snapshot)
+                        }
+                    }
+                }
+            } else if !type.isEmpty {
+                stateQueue.async {
+                    if self.seenMessageTypes.insert(type).inserted {
+                        let keys = Array(dict.keys).sorted().joined(separator: ",")
+                        DispatchQueue.main.async {
+                            self.onDebugLog?("Realtime message type=\(type) (no transcript extracted) keys=[\(keys)]")
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -456,21 +534,68 @@ final class ElevenLabsRealtimeTranscriber {
         outputFormat = nil
     }
 
-    private func waitForSessionStartIfNeeded() async throws {
-        let deadline = Date().addingTimeInterval(2.5)
-        while Date() < deadline {
-            let snapshot = stateQueue.sync { (sessionStarted, pendingError, closed) }
-            if let error = snapshot.1 {
-                throw error
+    private static func extractTranscriptText(from payload: [String: Any]) -> String? {
+        let topLevelCandidates = [
+            payload["text"] as? String,
+            payload["transcript"] as? String,
+            payload["partial"] as? String,
+            payload["partial_transcript"] as? String,
+            payload["normalized_text"] as? String
+        ]
+        if let value = topLevelCandidates.compactMap({ $0 }).first {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
             }
-            if snapshot.0 || snapshot.2 {
-                return
-            }
-            try await Task.sleep(nanoseconds: 50_000_000)
         }
+
+        if let nested = payload["data"] as? [String: Any] {
+            return extractTranscriptText(from: nested)
+        }
+        return nil
+    }
+
+    private static func extractError(from payload: [String: Any]) -> String? {
+        if let error = payload["error"] as? String, !error.isEmpty {
+            return error
+        }
+        if let message = payload["message"] as? String, !message.isEmpty {
+            return message
+        }
+        if let nested = payload["error"] as? [String: Any] {
+            if let message = nested["message"] as? String, !message.isEmpty {
+                return message
+            }
+            if let details = nested["details"] as? String, !details.isEmpty {
+                return details
+            }
+        }
+        return nil
+    }
+
+    private static func isFinalTranscriptMessage(type: String, payload: [String: Any]) -> Bool {
+        if type.contains("commit") || type.contains("final") || type.contains("complete") {
+            return true
+        }
+        if let isFinal = payload["is_final"] as? Bool {
+            return isFinal
+        }
+        if let finalized = payload["final"] as? Bool {
+            return finalized
+        }
+        if let nested = payload["data"] as? [String: Any] {
+            if let isFinal = nested["is_final"] as? Bool {
+                return isFinal
+            }
+            if let finalized = nested["final"] as? Bool {
+                return finalized
+            }
+        }
+        return false
     }
 
     private func closeSocket() {
+        handshakeTimeoutWorkItem?.cancel()
         stateQueue.async {
             self.closed = true
             self.sessionStarted = false
