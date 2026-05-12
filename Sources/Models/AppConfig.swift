@@ -1,4 +1,10 @@
 import Foundation
+
+struct WidgetScreenPosition: Codable, Equatable {
+    var normalizedCenterX: Double
+    var normalizedCenterY: Double
+}
+
 struct AppConfig: Codable {
     var providerName: String
     var baseURL: String
@@ -15,6 +21,7 @@ struct AppConfig: Codable {
     var restoreClipboard: Bool
     var preferAccessibilityInsertion: Bool
     var hotkeyBinding: String
+    var widgetPositionsByScreen: [String: WidgetScreenPosition]
 
     enum CodingKeys: String, CodingKey {
         case providerName
@@ -32,6 +39,7 @@ struct AppConfig: Codable {
         case restoreClipboard
         case preferAccessibilityInsertion
         case hotkeyBinding
+        case widgetPositionsByScreen
     }
 
     static func `default`() -> AppConfig {
@@ -72,7 +80,8 @@ Return plain text only with no commentary.
             ],
             restoreClipboard: true,
             preferAccessibilityInsertion: true,
-            hotkeyBinding: HotkeyBinding.fn.rawValue
+            hotkeyBinding: HotkeyBinding.fn.rawValue,
+            widgetPositionsByScreen: [:]
         )
     }
 
@@ -91,7 +100,8 @@ Return plain text only with no commentary.
         customVocabulary: [String],
         restoreClipboard: Bool,
         preferAccessibilityInsertion: Bool,
-        hotkeyBinding: String
+        hotkeyBinding: String,
+        widgetPositionsByScreen: [String: WidgetScreenPosition]
     ) {
         self.providerName = providerName
         self.baseURL = baseURL
@@ -108,6 +118,7 @@ Return plain text only with no commentary.
         self.restoreClipboard = restoreClipboard
         self.preferAccessibilityInsertion = preferAccessibilityInsertion
         self.hotkeyBinding = hotkeyBinding
+        self.widgetPositionsByScreen = widgetPositionsByScreen
     }
 
     init(from decoder: Decoder) throws {
@@ -129,6 +140,7 @@ Return plain text only with no commentary.
         restoreClipboard = try container.decodeIfPresent(Bool.self, forKey: .restoreClipboard) ?? defaults.restoreClipboard
         preferAccessibilityInsertion = try container.decodeIfPresent(Bool.self, forKey: .preferAccessibilityInsertion) ?? defaults.preferAccessibilityInsertion
         hotkeyBinding = try container.decodeIfPresent(String.self, forKey: .hotkeyBinding) ?? defaults.hotkeyBinding
+        widgetPositionsByScreen = try container.decodeIfPresent([String: WidgetScreenPosition].self, forKey: .widgetPositionsByScreen) ?? defaults.widgetPositionsByScreen
     }
 
     func resolvedHotkeyBinding() -> HotkeyBinding {

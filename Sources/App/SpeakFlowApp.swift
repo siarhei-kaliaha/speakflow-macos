@@ -60,6 +60,12 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
         },
         onAcceptMeeting: { [weak self] in
             Task { @MainActor in self?.acceptMeetingPrompt() }
+        },
+        initialWidgetPositionsByScreen: config.widgetPositionsByScreen,
+        onWidgetPositionsChanged: { [weak self] positionsByScreen in
+            Task { @MainActor in
+                self?.persistWidgetPositions(positionsByScreen)
+            }
         }
     )
     @MainActor private lazy var hotkeyMonitor = makeHotkeyMonitor()
@@ -539,6 +545,17 @@ final class SpeakFlowApp: NSObject, NSApplicationDelegate {
     @objc
     private func resetWidgetPosition() {
         widgetCoordinator.resetLayout(debugLog: debugLog)
+    }
+
+    @MainActor
+    private func persistWidgetPositions(_ positionsByScreen: [String: WidgetScreenPosition]) {
+        config.widgetPositionsByScreen = positionsByScreen
+        do {
+            try configStore.save(config)
+            debugLog("Persisted widget positions for \(positionsByScreen.count) screen(s)")
+        } catch {
+            debugLog("Failed to persist widget positions: \(error.localizedDescription)")
+        }
     }
 
     @MainActor

@@ -11,17 +11,25 @@ final class WidgetWindowCoordinator {
     private var currentState: WidgetContentView.VisualState = .idle
     private var meetingAppName = "Meeting"
     private var debugLog: (String) -> Void = { _ in }
+    private var widgetPositionsByScreen: [String: WidgetScreenPosition]
+    private let onWidgetPositionsChanged: ([String: WidgetScreenPosition]) -> Void
+    private let defaultRightOffset: CGFloat = 48
+    private let defaultDownOffset: CGFloat = 24
 
     init(
         onPrimaryClick: @escaping () -> Void,
         onStopClick: @escaping () -> Void,
         onDismissMeeting: @escaping () -> Void,
-        onAcceptMeeting: @escaping () -> Void
+        onAcceptMeeting: @escaping () -> Void,
+        initialWidgetPositionsByScreen: [String: WidgetScreenPosition],
+        onWidgetPositionsChanged: @escaping ([String: WidgetScreenPosition]) -> Void
     ) {
         self.onPrimaryClick = onPrimaryClick
         self.onStopClick = onStopClick
         self.onDismissMeeting = onDismissMeeting
         self.onAcceptMeeting = onAcceptMeeting
+        self.widgetPositionsByScreen = initialWidgetPositionsByScreen
+        self.onWidgetPositionsChanged = onWidgetPositionsChanged
     }
 
     @MainActor
@@ -44,6 +52,9 @@ final class WidgetWindowCoordinator {
             view.onStopRecording = onStopClick
             view.onDismissMeeting = onDismissMeeting
             view.onAcceptMeeting = onAcceptMeeting
+            view.onDragFinished = { [weak self] frame in
+                self?.handleWidgetDragFinished(frame)
+            }
             view.updateMeetingPrompt(appName: meetingAppName)
             view.apply(state: currentState)
             window.isReleasedWhenClosed = false
@@ -96,6 +107,8 @@ final class WidgetWindowCoordinator {
 
     @MainActor
     func resetLayout(debugLog: @escaping (String) -> Void) {
+        widgetPositionsByScreen = [:]
+        onWidgetPositionsChanged(widgetPositionsByScreen)
         positionWindows(animated: true, debugLog: debugLog)
     }
 
@@ -136,7 +149,7 @@ final class WidgetWindowCoordinator {
 
         let targetSize = WidgetTheme.widgetOuterSize(for: currentState)
         for (window, screen) in zip(widgetWindows, screens) {
-            let targetFrame = defaultWidgetFrame(on: screen, size: targetSize)
+            let targetFrame = resolvedWidgetFrame(on: screen, size: targetSize)
             window.setFrame(targetFrame, display: true, animate: animated)
             debugLog("Widget moved to screen frame \(NSStringFromRect(targetFrame))")
         }
@@ -153,7 +166,7 @@ final class WidgetWindowCoordinator {
         }
 
         for (window, screen) in zip(widgetWindows, screens) {
-            let targetFrame = defaultWidgetFrame(on: screen, size: targetSize)
+            let targetFrame = resolvedWidgetFrame(on: screen, size: targetSize)
             window.setFrame(targetFrame, display: true, animate: true)
         }
         bringToFront()
@@ -161,10 +174,67 @@ final class WidgetWindowCoordinator {
 
     private func defaultWidgetFrame(on screen: NSScreen, size: NSSize) -> NSRect {
         let visibleFrame = screen.visibleFrame
-        let origin = NSPoint(
-            x: visibleFrame.midX - size.width / 2,
-            y: visibleFrame.minY + 34
+        let baseOrigin = NSPoint(
+            x: visibleFrame.midX - size.width / 2 + defaultRightOffset,
+            y: visibleFrame.minY + 34 - defaultDownOffset
         )
+        let origin = clampedOrigin(baseOrigin, in: visibleFrame, size: size)
         return NSRect(origin: origin, size: size)
+    }
+
+    private func resolvedWidgetFrame(on screen: NSScreen, size: NSSize) -> NSRect {
+        let visibleFrame = screen.visibleFrame
+        let screenID = screenIdentifier(screen)
+        guard let saved = widgetPositionsByScreen[screenID] else {
+            return defaultWidgetFrame(on: screen, size: size)
+        }
+
+        let centerX = visibleFrame.minX + (visibleFrame.width * CGFloat(saved.normalizedCenterX))
+        let centerY = visibleFrame.minY + (visibleFrame.height * CGFloat(saved.normalizedCenterY))
+        let candidateOrigin = NSPoint(
+            x: centerX - size.width / 2,
+            y: centerY - size.height / 2
+        )
+        let origin = clampedOrigin(candidateOrigin, in: visibleFrame, size: size)
+        return NSRect(origin: origin, size: size)
+    }
+
+    private func clampedOrigin(_ origin: NSPoint, in visibleFrame: NSRect, size: NSSize) -> NSPoint {
+        let minX = visibleFrame.minX
+        let maxX = visibleFrame.maxX - size.width
+        let minY = visibleFrame.minY
+        let maxY = visibleFrame.maxY - size.height
+        return NSPoint(
+            x: min(max(origin.x, minX), maxX),
+            y: min(max(origin.y, minY), maxY)
+        )
+    }
+
+    private func handleWidgetDragFinished(_ frame: NSRect) {
+        let center = NSPoint(x: frame.midX, y: frame.midY)
+        guard let screen = NSScreen.screens.first(where: { $0.visibleFrame.contains(center) }) else { return }
+        let visibleFrame = screen.visibleFrame
+        guard visibleFrame.width > 1, visibleFrame.height > 1 else { return }
+
+        let normalizedX = Double((center.x - visibleFrame.minX) / visibleFrame.width)
+        let normalizedY = Double((center.y - visibleFrame.minY) / visibleFrame.height)
+        let boundedX = min(max(normalizedX, 0), 1)
+        let boundedY = min(max(normalizedY, 0), 1)
+        let screenID = screenIdentifier(screen)
+
+        widgetPositionsByScreen[screenID] = WidgetScreenPosition(
+            normalizedCenterX: boundedX,
+            normalizedCenterY: boundedY
+        )
+        onWidgetPositionsChanged(widgetPositionsByScreen)
+        debugLog("Saved widget position for screen \(screenID): x=\(boundedX), y=\(boundedY)")
+    }
+
+    private func screenIdentifier(_ screen: NSScreen) -> String {
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        if let number = screen.deviceDescription[key] as? NSNumber {
+            return String(number.uint32Value)
+        }
+        return "\(Int(screen.frame.origin.x))x\(Int(screen.frame.origin.y))-\(Int(screen.frame.width))x\(Int(screen.frame.height))"
     }
 }

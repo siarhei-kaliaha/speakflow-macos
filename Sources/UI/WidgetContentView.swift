@@ -15,6 +15,7 @@ final class WidgetContentView: NSView {
     var onStopRecording: (() -> Void)?
     var onDismissMeeting: (() -> Void)?
     var onAcceptMeeting: (() -> Void)?
+    var onDragFinished: ((NSRect) -> Void)?
 
     private let idleContainer = NSView()
     private let capsuleView = NSVisualEffectView()
@@ -655,12 +656,16 @@ final class WidgetContentView: NSView {
         }
 
         let nextOrigin = NSPoint(x: dragStartWindowOrigin.x + deltaX, y: dragStartWindowOrigin.y + deltaY)
-        window.setFrameOrigin(nextOrigin)
+        let clampedOrigin = clamp(origin: nextOrigin, for: window)
+        window.setFrameOrigin(clampedOrigin)
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard window != nil else { return }
-        guard !didDrag else { return }
+        guard let window else { return }
+        if didDrag {
+            onDragFinished?(window.frame)
+            return
+        }
         guard visualState != .meetingDetected else { return }
         onToggle?()
     }
@@ -702,6 +707,20 @@ final class WidgetContentView: NSView {
 
     private func stopMeetingPulseAnimation() {
         acceptMeetingDotView.layer?.removeAnimation(forKey: "meetingPulseOpacity")
+    }
+
+    private func clamp(origin: NSPoint, for window: NSWindow) -> NSPoint {
+        guard let screen = window.screen else { return origin }
+        let visibleFrame = screen.visibleFrame
+        let minX = visibleFrame.minX
+        let maxX = visibleFrame.maxX - window.frame.width
+        let minY = visibleFrame.minY
+        let maxY = visibleFrame.maxY - window.frame.height
+
+        return NSPoint(
+            x: min(max(origin.x, minX), maxX),
+            y: min(max(origin.y, minY), maxY)
+        )
     }
 }
 
